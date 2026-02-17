@@ -68,6 +68,24 @@ function sanitizeMovieTitles(value: unknown): string[] {
   return [...deduped]
 }
 
+function extractMovieTitlesFromMarkdown(text: string): string[] {
+  const matches: string[] = []
+  const patterns = [/\*\*(.*?)\*\*/g, /\*([^*\n]+)\*/g]
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(text)) !== null) {
+      const candidate = match[1]?.trim()
+      if (!candidate) {
+        continue
+      }
+      matches.push(candidate.replace(/['’]s$/i, "").trim())
+    }
+  }
+
+  return sanitizeMovieTitles(matches)
+}
+
 function createSSEEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
@@ -92,12 +110,14 @@ async function extractMovieTitlesFromText(responseText: string): Promise<string[
     return []
   }
 
+  const markdownTitles = extractMovieTitlesFromMarkdown(responseText)
+
   try {
     const extraction = await openai.responses.create({
       model: OPENAI_EXTRACT_MODEL,
       input: responseText,
       instructions:
-        "Extract only explicitly recommended movie titles from the assistant reply. Return only JSON matching the schema.",
+        "Extract every movie title mentioned in the assistant reply, including referenced films and recommendations. Return only JSON matching the schema.",
       text: {
         format: {
           type: "json_schema",
@@ -119,10 +139,10 @@ async function extractMovieTitlesFromText(responseText: string): Promise<string[
     })
 
     const parsed = JSON.parse(extraction.output_text) as { movieTitles?: unknown }
-    return sanitizeMovieTitles(parsed.movieTitles)
+    return sanitizeMovieTitles([...sanitizeMovieTitles(parsed.movieTitles), ...markdownTitles])
   } catch (error) {
     console.error("Failed to extract movie titles:", error)
-    return []
+    return markdownTitles
   }
 }
 

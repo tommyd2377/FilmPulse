@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, FormEvent, ChangeEvent } from "react"
+import { useRef, useState, FormEvent, ChangeEvent } from "react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -62,15 +62,21 @@ function parseSSEEvent(rawEvent: string): SSEEvent | null {
 }
 
 function extractMovieTitles(text: string): string[] {
-  const regex = /\*\*(.*?)\*\*/g
   const matches: string[] = []
-  let match: RegExpExecArray | null
+  const patterns = [/\*\*(.*?)\*\*/g, /\*([^*\n]+)\*/g]
 
-  while ((match = regex.exec(text)) !== null) {
-    matches.push(match[1])
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(text)) !== null) {
+      const candidate = match[1]?.trim()
+      if (!candidate) {
+        continue
+      }
+      matches.push(candidate.replace(/['’]s$/i, "").trim())
+    }
   }
 
-  return matches
+  return sanitizeMovieTitles(matches)
 }
 
 function sanitizeMovieTitles(titles: string[]): string[] {
@@ -98,11 +104,44 @@ export default function FilmPulse() {
   const [isLoading, setIsLoading] = useState(false)
   const [lastResponseId, setLastResponseId] = useState<string | null>(null)
   const [preference, setPreference] = useState(0.5)
+  const [activeMovieMenuId, setActiveMovieMenuId] = useState<string | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const updateMessageById = (messageId: string, updater: (message: Message) => Message) => {
     setMessages((prevMessages) =>
       prevMessages.map((message) => (message.id === messageId ? updater(message) : message))
     )
+  }
+
+  const setMessageRef = (messageId: string, node: HTMLDivElement | null) => {
+    if (node) {
+      messageRefs.current[messageId] = node
+      return
+    }
+    delete messageRefs.current[messageId]
+  }
+
+  const smoothScrollToMessageTop = (messageId: string) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const container = chatScrollRef.current
+        const messageElement = messageRefs.current[messageId]
+
+        if (!container || !messageElement) {
+          return
+        }
+
+        const containerRect = container.getBoundingClientRect()
+        const messageRect = messageElement.getBoundingClientRect()
+        const targetTop = container.scrollTop + (messageRect.top - containerRect.top) - 8
+
+        container.scrollTo({
+          top: Math.max(0, targetTop),
+          behavior: "smooth",
+        })
+      })
+    })
   }
 
   const fetchMoviesWithPosters = async (movieTitles: string[]): Promise<RecommendedMovie[]> => {
@@ -159,10 +198,8 @@ export default function FilmPulse() {
     )
   }
 
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-
-    const userMessage = inputText.trim()
+  const submitUserMessage = async (rawMessage: string) => {
+    const userMessage = rawMessage.trim()
     if (!userMessage || isLoading) {
       return
     }
@@ -176,11 +213,13 @@ export default function FilmPulse() {
 
     setIsLoading(true)
     setInputText("")
+    setActiveMovieMenuId(null)
     setMessages((prevMessages) => [
       ...prevMessages,
       { id: userMessageId, content: userMessage, isBot: false, movies: [] },
       { id: botMessageId, content: "", isBot: true, movies: [] },
     ])
+    smoothScrollToMessageTop(botMessageId)
 
     try {
       const response = await fetch("/api/getRecommendation", {
@@ -314,7 +353,7 @@ export default function FilmPulse() {
           return
         }
 
-        const movieTitles = metadataMovieTitles.length > 0 ? metadataMovieTitles : extractMovieTitles(streamedResponseText)
+        const movieTitles = sanitizeMovieTitles([...metadataMovieTitles, ...extractMovieTitles(streamedResponseText)])
         const moviesWithPosters = await fetchMoviesWithPosters(movieTitles)
 
         updateMessageById(botMessageId, (currentMessage) => ({
@@ -335,6 +374,15 @@ export default function FilmPulse() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    void submitUserMessage(inputText)
+  }
+
+  const handleShowMoreLikeThis = (movieTitle: string) => {
+    void submitUserMessage(`Show me more movies like ${movieTitle}.`)
   }
 
   return (
@@ -370,11 +418,15 @@ export default function FilmPulse() {
 
         <Card className="bg-gray-800 border-gray-700 shadow-xl">
           <CardContent className="p-6">
-            <div className="space-y-4 mb-4 max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
+            <div
+              ref={chatScrollRef}
+              className="space-y-4 mb-4 max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800"
+            >
               <AnimatePresence>
                 {messages.map((msg) => (
                   <motion.div
                     key={msg.id}
+                    ref={(node) => setMessageRef(msg.id, node)}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -20 }}
@@ -399,30 +451,74 @@ export default function FilmPulse() {
 
                       {msg.movies && msg.movies.length > 0 && (
                         <div className="flex flex-wrap mt-2">
-                          {msg.movies.map((movie, idx) => (
-                            <div key={`${msg.id}-movie-${idx}`} className="mr-4 mb-4 text-center">
-                              {movie.tmdbUrl ? (
-                                <a href={movie.tmdbUrl} target="_blank" rel="noopener noreferrer" className="group">
-                                  <img
-                                    src={movie.poster ?? undefined}
-                                    alt={movie.title}
-                                    loading="lazy"
-                                    className="w-32 h-auto rounded-lg border-2 border-transparent group-hover:border-purple-400 group-hover:shadow-lg transition-all duration-300"
-                                  />
-                                </a>
-                              ) : (
-                                <div className="w-32 h-48 bg-gray-700 flex items-center justify-center rounded-lg">
-                                  <span className="text-gray-400 text-xs">No Image</span>
-                                </div>
-                              )}
-                              <p className="text-xs mt-1 font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600">
-                                {movie.title}
-                              </p>
-                              <p className="text-xs text-gray-400">
-                                {movie.releaseYear} | {movie.genre}
-                              </p>
-                            </div>
-                          ))}
+                          {msg.movies.map((movie, idx) => {
+                            const movieActionId = `${msg.id}-movie-${idx}`
+                            const isMovieMenuOpen = activeMovieMenuId === movieActionId
+
+                            return (
+                              <div key={movieActionId} className="mr-4 mb-4 text-center">
+                                <button
+                                  type="button"
+                                  className="rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                                  onClick={() =>
+                                    setActiveMovieMenuId((currentId) =>
+                                      currentId === movieActionId ? null : movieActionId
+                                    )
+                                  }
+                                  aria-expanded={isMovieMenuOpen}
+                                  aria-label={`Movie actions for ${movie.title}`}
+                                >
+                                  {movie.poster ? (
+                                    <img
+                                      src={movie.poster}
+                                      alt={movie.title}
+                                      loading="lazy"
+                                      className="w-32 h-auto rounded-lg border-2 border-transparent hover:border-purple-400 hover:shadow-lg transition-all duration-300"
+                                    />
+                                  ) : (
+                                    <div className="w-32 h-48 bg-gray-700 flex items-center justify-center rounded-lg">
+                                      <span className="text-gray-400 text-xs">No Image</span>
+                                    </div>
+                                  )}
+                                </button>
+
+                                <p className="text-xs mt-1 font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600">
+                                  {movie.title}
+                                </p>
+                                <p className="text-xs text-gray-400">
+                                  {movie.releaseYear} | {movie.genre}
+                                </p>
+
+                                {isMovieMenuOpen && (
+                                  <div className="mt-2 w-40 rounded-md border border-gray-600 bg-gray-900/95 p-1.5 shadow-lg">
+                                    <button
+                                      type="button"
+                                      className="w-full rounded px-2 py-1.5 text-xs text-left text-white hover:bg-gray-700 disabled:opacity-50"
+                                      onClick={() => handleShowMoreLikeThis(movie.title)}
+                                      disabled={isLoading}
+                                    >
+                                      Show more like this
+                                    </button>
+                                    {movie.tmdbUrl ? (
+                                      <a
+                                        href={movie.tmdbUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="mt-1 block w-full rounded px-2 py-1.5 text-xs text-left text-white hover:bg-gray-700"
+                                        onClick={() => setActiveMovieMenuId(null)}
+                                      >
+                                        Go to TMDB
+                                      </a>
+                                    ) : (
+                                      <span className="mt-1 block w-full rounded px-2 py-1.5 text-xs text-left text-gray-500">
+                                        TMDB unavailable
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                     </div>
