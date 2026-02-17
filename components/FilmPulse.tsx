@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, FormEvent, ChangeEvent } from "react"
+import { useState, useEffect, FormEvent, ChangeEvent } from "react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -40,8 +40,6 @@ export default function FilmPulse() {
   const [messages, setMessages] = useState<Message[]>([])
   const [inputText, setInputText] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  // Specify that the ref will refer to an HTMLDivElement or be null
-  const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const [preference, setPreference] = useState(0.5); // 0 for Indie, 1 for Blockbusters
 
   useEffect(() => {
@@ -56,13 +54,7 @@ export default function FilmPulse() {
       ])
     }
     console.log("Messages updated:", messages)
-    scrollToBottom()
   }, [messages])
-
-  const scrollToBottom = () => {
-    console.log("Scrolling to bottom of chat")
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }
 
   function extractMovieTitles(text: string): string[] {
     const regex = /\*\*(.*?)\*\*/g; // Matches **Movie Title**
@@ -216,7 +208,6 @@ export default function FilmPulse() {
       ]);
     } finally {
       setIsLoading(false);
-      scrollToBottom();
       console.log("API request completed");
     }
   };
@@ -245,7 +236,7 @@ export default function FilmPulse() {
     step="0.1"
     value={preference}
     onChange={(e) => setPreference(parseFloat(e.target.value))}
-    className="w-3/4 cursor-pointer"
+    className="filmpulse-slider w-3/4 cursor-pointer"
   />
   <div className="flex justify-between w-3/4 text-gray-400 text-xs mt-1">
     <span>Indie/Hidden Gems</span>
@@ -313,7 +304,6 @@ export default function FilmPulse() {
     </motion.div>
   ))}
 </AnimatePresence>
-              <div ref={messagesEndRef} />
             </div>
 
             <form onSubmit={handleSubmit} className="flex gap-2 mt-4">
@@ -328,7 +318,11 @@ export default function FilmPulse() {
                 disabled={isLoading}
                 className="flex-grow bg-gray-700 border-gray-600 text-white placeholder-gray-400"
               />
-              <Button type="submit" disabled={isLoading} className="bg-purple-600 hover:bg-purple-700 text-white">
+              <Button
+                type="submit"
+                disabled={isLoading}
+                className="bg-gradient-to-r from-purple-400 to-pink-600 hover:from-purple-500 hover:to-pink-700 text-white"
+              >
                 {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
               </Button>
             </form>
