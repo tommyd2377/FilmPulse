@@ -383,14 +383,16 @@ export default function FilmPulse() {
                   >
                     <div
                       className={`max-w-[80%] p-3 rounded-lg ${
-                        msg.isBot ? "bg-gray-700 text-white" : "bg-purple-600 text-white"
+                        msg.isBot
+                          ? "bg-gray-700 text-white"
+                          : "bg-gradient-to-r from-purple-400 to-pink-600 text-white"
                       }`}
                     >
                       <div
                         dangerouslySetInnerHTML={{
                           __html: msg.content.replace(
                             /\*\*(.*?)\*\*/g,
-                            "<strong class='text-purple-300'>$1</strong>"
+                            "<strong class='inline-block font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600'>$1</strong>"
                           ),
                         }}
                       />
@@ -413,7 +415,9 @@ export default function FilmPulse() {
                                   <span className="text-gray-400 text-xs">No Image</span>
                                 </div>
                               )}
-                              <p className="text-xs mt-1 text-gray-300 font-semibold">{movie.title}</p>
+                              <p className="text-xs mt-1 font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600">
+                                {movie.title}
+                              </p>
                               <p className="text-xs text-gray-400">
                                 {movie.releaseYear} | {movie.genre}
                               </p>
@@ -434,7 +438,7 @@ export default function FilmPulse() {
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setInputText(e.target.value)}
                 placeholder="Enter movies you like..."
                 disabled={isLoading}
-                className="flex-grow bg-gray-700 border-gray-600 text-white placeholder-gray-400"
+                className="flex-grow bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:border-pink-500 selection:bg-pink-500/40 selection:text-white"
               />
               <Button
                 type="submit"
