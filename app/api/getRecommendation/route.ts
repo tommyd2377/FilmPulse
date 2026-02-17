@@ -1,32 +1,250 @@
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-})
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY
+const OPENAI_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2"
+const OPENAI_EXTRACT_MODEL = process.env.OPENAI_EXTRACT_MODEL ?? "gpt-5-mini"
 
-export async function POST(req: Request) {
-  try {
-    const { messages } = await req.json()
+const openai = OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: OPENAI_API_KEY,
+    })
+  : null
 
-    if (!Array.isArray(messages) || messages.length === 0) {
-      throw new Error("Invalid or empty messages array")
+interface RecommendationRequestBody {
+  userMessage?: unknown
+  preference?: unknown
+  previousResponseId?: unknown
+}
+
+function preferenceMode(preference: number): "indie" | "mixed" | "blockbusters" {
+  if (preference <= 0.33) {
+    return "indie"
+  }
+  if (preference >= 0.67) {
+    return "blockbusters"
+  }
+  return "mixed"
+}
+
+function buildInstructions(preference: number): string {
+  const mode = preferenceMode(preference)
+
+  const preferenceDirective =
+    mode === "indie"
+      ? "Prioritize indie, international, or lesser-known films. Avoid obvious blockbusters unless the user asks."
+      : mode === "blockbusters"
+      ? "Prioritize popular, mainstream, or blockbuster films with broad appeal."
+      : "Blend hidden gems and crowd-pleasers in a balanced way."
+
+  return [
+    "You are FilmPulse, a warm and conversational movie concierge.",
+    "Keep replies natural and friendly, with contractions and clear personality, never robotic.",
+    "Recommend 3-4 movies unless the user explicitly asks for more.",
+    "For each movie, include a short reason (1 sentence) why it matches the user's taste.",
+    "Format every movie title in **bold** markdown.",
+    "End with one concise follow-up question to continue the conversation.",
+    preferenceDirective,
+  ].join("\n")
+}
+
+function sanitizeMovieTitles(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const deduped = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue
     }
+    const trimmed = item.trim()
+    if (!trimmed) {
+      continue
+    }
+    deduped.add(trimmed)
+  }
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: messages,
+  return [...deduped]
+}
+
+function createSSEEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return "Failed to get recommendation"
+}
+
+function shouldRetryWithoutPreviousResponseId(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const message = error.message.toLowerCase()
+  return message.includes("previous_response_id") || message.includes("previous response")
+}
+
+async function extractMovieTitlesFromText(responseText: string): Promise<string[]> {
+  if (!openai || !responseText.trim()) {
+    return []
+  }
+
+  try {
+    const extraction = await openai.responses.create({
+      model: OPENAI_EXTRACT_MODEL,
+      input: responseText,
+      instructions:
+        "Extract only explicitly recommended movie titles from the assistant reply. Return only JSON matching the schema.",
+      text: {
+        format: {
+          type: "json_schema",
+          name: "movie_title_extraction",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              movieTitles: {
+                type: "array",
+                items: { type: "string" },
+              },
+            },
+            required: ["movieTitles"],
+          },
+        },
+      },
     })
 
-    if (!response.choices || response.choices.length === 0) {
-      throw new Error("No response choices from OpenAI")
-    }
-
-    return NextResponse.json({ recommendation: response.choices[0].message.content })
-  } catch (error: unknown) {
-    console.error("Error in getRecommendation:", error)
-    const message = error instanceof Error ? error.message : "Failed to get recommendation"
-    return NextResponse.json({ error: message }, { status: 500 })
+    const parsed = JSON.parse(extraction.output_text) as { movieTitles?: unknown }
+    return sanitizeMovieTitles(parsed.movieTitles)
+  } catch (error) {
+    console.error("Failed to extract movie titles:", error)
+    return []
   }
 }
 
+async function streamAssistantResponse(options: {
+  userMessage: string
+  preference: number
+  previousResponseId: string | null
+  onToken: (delta: string) => void
+}): Promise<{ responseText: string; responseId: string | null }> {
+  if (!openai) {
+    throw new Error("OpenAI API key is not configured. Please add OPENAI_API_KEY to your environment.")
+  }
+
+  const instructions = buildInstructions(options.preference)
+
+  const runAttempt = async (previousResponseId: string | null) => {
+    let responseText = ""
+    let responseId: string | null = null
+    let sawTokenDelta = false
+
+    const stream = await openai.responses.create({
+      model: OPENAI_MODEL,
+      instructions,
+      input: options.userMessage,
+      previous_response_id: previousResponseId ?? undefined,
+      store: true,
+      stream: true,
+    })
+
+    for await (const event of stream) {
+      if (event.type === "response.output_text.delta" && event.delta) {
+        sawTokenDelta = true
+        responseText += event.delta
+        options.onToken(event.delta)
+      } else if (event.type === "response.completed") {
+        responseId = event.response.id
+        if (!sawTokenDelta && event.response.output_text) {
+          responseText = event.response.output_text
+          options.onToken(event.response.output_text)
+        }
+      } else if (event.type === "response.failed") {
+        throw new Error(event.response.error?.message ?? "OpenAI response failed.")
+      } else if (event.type === "error") {
+        throw new Error(event.message || "OpenAI stream error.")
+      }
+    }
+
+    return { responseText, responseId }
+  }
+
+  try {
+    return await runAttempt(options.previousResponseId)
+  } catch (error) {
+    if (options.previousResponseId && shouldRetryWithoutPreviousResponseId(error)) {
+      console.warn("Retrying without previous_response_id:", options.previousResponseId)
+      return runAttempt(null)
+    }
+    throw error
+  }
+}
+
+export async function POST(req: Request) {
+  if (!openai) {
+    return NextResponse.json(
+      { error: "OpenAI API key is not configured. Please add OPENAI_API_KEY to your environment." },
+      { status: 500 }
+    )
+  }
+
+  let body: RecommendationRequestBody
+  try {
+    body = (await req.json()) as RecommendationRequestBody
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 })
+  }
+
+  const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : ""
+  const preference = typeof body.preference === "number" && Number.isFinite(body.preference) ? body.preference : 0.5
+  const previousResponseId =
+    typeof body.previousResponseId === "string" && body.previousResponseId.trim()
+      ? body.previousResponseId.trim()
+      : null
+
+  if (!userMessage) {
+    return NextResponse.json({ error: "userMessage is required." }, { status: 400 })
+  }
+
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const sendEvent = (event: string, data: unknown) => {
+        controller.enqueue(encoder.encode(createSSEEvent(event, data)))
+      }
+
+      try {
+        const { responseText, responseId } = await streamAssistantResponse({
+          userMessage,
+          preference,
+          previousResponseId,
+          onToken: (delta) => {
+            sendEvent("token", { delta })
+          },
+        })
+
+        const movieTitles = await extractMovieTitlesFromText(responseText)
+        sendEvent("metadata", { responseId, movieTitles })
+      } catch (error) {
+        console.error("Error in getRecommendation:", error)
+        sendEvent("error", { message: getErrorMessage(error) })
+      } finally {
+        sendEvent("done", {})
+        controller.close()
+      }
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  })
+}
