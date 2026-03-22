@@ -83,13 +83,46 @@ function sanitizeMovieTitles(titles: string[]): string[] {
   const deduped = new Set<string>()
 
   for (const title of titles) {
-    const trimmed = title.trim()
-    if (trimmed) {
-      deduped.add(trimmed)
+    const normalized = normalizeMovieTitle(title)
+    if (!normalized || !isLikelyMovieTitle(normalized)) {
+      continue
     }
+    deduped.add(normalized)
   }
 
   return [...deduped]
+}
+
+function normalizeMovieTitle(rawTitle: string): string {
+  return rawTitle
+    .trim()
+    .replace(/^[\s"'“”‘’`]+|[\s"'“”‘’`]+$/g, "")
+    .replace(/^[\-–—:;,.!?()\[\]]+|[\-–—:;,.!?()\[\]]+$/g, "")
+    .replace(/\s*\((\d{4}|[A-Za-z]{3,}\s\d{4})\)$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function isLikelyMovieTitle(title: string): boolean {
+  if (title.length < 2 || title.length > 80) {
+    return false
+  }
+
+  if (/[.?!]\s+\w+/.test(title)) {
+    return false
+  }
+
+  if (title.split(/\s+/).length > 14) {
+    return false
+  }
+
+  const words = title.split(/\s+/)
+  const lowercaseStarts = words.filter((word) => /^[a-z]/.test(word)).length
+  if (words.length >= 5 && lowercaseStarts >= words.length - 1) {
+    return false
+  }
+
+  return true
 }
 
 export default function FilmPulse() {
@@ -103,6 +136,7 @@ export default function FilmPulse() {
   const [inputText, setInputText] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [lastResponseId, setLastResponseId] = useState<string | null>(null)
+  const lastResponseIdRef = useRef<string | null>(null)
   const [preference, setPreference] = useState(0.5)
   const [activeMovieMenuId, setActiveMovieMenuId] = useState<string | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -151,7 +185,7 @@ export default function FilmPulse() {
       return []
     }
 
-    return Promise.all(
+    const movies = await Promise.all(
       titles.map(async (title) => {
         if (!TMDB_API_KEY) {
           return { title, poster: null, tmdbUrl: null, releaseYear: "N/A", genre: "Unknown Genre" }
@@ -171,7 +205,7 @@ export default function FilmPulse() {
           }
 
           if (!tmdbSearchData.results || tmdbSearchData.results.length === 0) {
-            return { title, poster: null, tmdbUrl: null, releaseYear: "N/A", genre: "Unknown Genre" }
+            return null
           }
 
           const movie = tmdbSearchData.results[0]
@@ -192,10 +226,12 @@ export default function FilmPulse() {
             genre: movieDetails?.genres?.[0]?.name ?? "Unknown Genre",
           }
         } catch {
-          return { title, poster: null, tmdbUrl: null, releaseYear: "N/A", genre: "Unknown Genre" }
+          return null
         }
       })
     )
+
+    return movies.filter((movie): movie is RecommendedMovie => movie !== null)
   }
 
   const submitUserMessage = async (rawMessage: string) => {
@@ -210,6 +246,13 @@ export default function FilmPulse() {
     let streamedResponseText = ""
     let metadataMovieTitles: string[] = []
     let streamErrored = false
+    const conversationHistory = messages
+      .filter((message) => message.content.trim().length > 0)
+      .slice(-12)
+      .map((message) => ({
+        role: message.isBot ? "assistant" : "user",
+        content: message.content,
+      }))
 
     setIsLoading(true)
     setInputText("")
@@ -230,7 +273,8 @@ export default function FilmPulse() {
         body: JSON.stringify({
           userMessage,
           preference,
-          previousResponseId: lastResponseId,
+          previousResponseId: lastResponseIdRef.current,
+          conversationHistory,
         }),
       })
 
@@ -285,6 +329,7 @@ export default function FilmPulse() {
             const metadata = parsedData as { responseId?: unknown; movieTitles?: unknown }
 
             if (typeof metadata.responseId === "string" && metadata.responseId.trim()) {
+              lastResponseIdRef.current = metadata.responseId
               setLastResponseId(metadata.responseId)
             }
 

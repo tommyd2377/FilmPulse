@@ -15,6 +15,14 @@ interface RecommendationRequestBody {
   userMessage?: unknown
   preference?: unknown
   previousResponseId?: unknown
+  conversationHistory?: unknown
+}
+
+type ConversationRole = "user" | "assistant"
+
+interface ConversationHistoryItem {
+  role: ConversationRole
+  content: string
 }
 
 function preferenceMode(preference: number): "indie" | "mixed" | "blockbusters" {
@@ -58,14 +66,96 @@ function sanitizeMovieTitles(value: unknown): string[] {
     if (typeof item !== "string") {
       continue
     }
-    const trimmed = item.trim()
-    if (!trimmed) {
+    const normalized = normalizeMovieTitle(item)
+    if (!normalized || !isLikelyMovieTitle(normalized)) {
       continue
     }
-    deduped.add(trimmed)
+    deduped.add(normalized)
   }
 
   return [...deduped]
+}
+
+function normalizeMovieTitle(rawTitle: string): string {
+  return rawTitle
+    .trim()
+    .replace(/^[\s"'“”‘’`]+|[\s"'“”‘’`]+$/g, "")
+    .replace(/^[\-–—:;,.!?()\[\]]+|[\-–—:;,.!?()\[\]]+$/g, "")
+    .replace(/\s*\((\d{4}|[A-Za-z]{3,}\s\d{4})\)$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function isLikelyMovieTitle(title: string): boolean {
+  if (title.length < 2 || title.length > 80) {
+    return false
+  }
+
+  if (/[.?!]\s+\w+/.test(title)) {
+    return false
+  }
+
+  if (title.split(/\s+/).length > 14) {
+    return false
+  }
+
+  const words = title.split(/\s+/)
+  const lowercaseStarts = words.filter((word) => /^[a-z]/.test(word)).length
+  if (words.length >= 5 && lowercaseStarts >= words.length - 1) {
+    return false
+  }
+
+  return true
+}
+
+function sanitizeConversationHistory(value: unknown): ConversationHistoryItem[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const history: ConversationHistoryItem[] = []
+
+  for (const item of value.slice(-12)) {
+    if (!item || typeof item !== "object") {
+      continue
+    }
+
+    const roleValue = "role" in item ? item.role : undefined
+    const contentValue = "content" in item ? item.content : undefined
+
+    if ((roleValue !== "user" && roleValue !== "assistant") || typeof contentValue !== "string") {
+      continue
+    }
+
+    const content = contentValue.trim().slice(0, 800)
+    if (!content) {
+      continue
+    }
+
+    history.push({
+      role: roleValue,
+      content,
+    })
+  }
+
+  return history
+}
+
+function buildConversationAwareInput(userMessage: string, history: ConversationHistoryItem[]): string {
+  if (history.length === 0) {
+    return userMessage
+  }
+
+  const formattedHistory = history
+    .map((turn) => `${turn.role === "assistant" ? "Assistant" : "User"}: ${turn.content}`)
+    .join("\n")
+
+  return [
+    "Conversation so far (oldest to newest):",
+    formattedHistory,
+    "",
+    `Latest user message: ${userMessage}`,
+  ].join("\n")
 }
 
 function extractMovieTitlesFromMarkdown(text: string): string[] {
@@ -117,7 +207,7 @@ async function extractMovieTitlesFromText(responseText: string): Promise<string[
       model: OPENAI_EXTRACT_MODEL,
       input: responseText,
       instructions:
-        "Extract every movie title mentioned in the assistant reply, including referenced films and recommendations. Return only JSON matching the schema.",
+        "Extract only exact movie titles mentioned in the assistant reply. Do not include commentary fragments, connective phrases, or anything that is not an actual movie title. Return only JSON matching the schema.",
       text: {
         format: {
           type: "json_schema",
@@ -150,6 +240,7 @@ async function streamAssistantResponse(options: {
   userMessage: string
   preference: number
   previousResponseId: string | null
+  conversationHistory: ConversationHistoryItem[]
   onToken: (delta: string) => void
 }): Promise<{ responseText: string; responseId: string | null }> {
   if (!openai) {
@@ -157,6 +248,7 @@ async function streamAssistantResponse(options: {
   }
 
   const instructions = buildInstructions(options.preference)
+  const input = buildConversationAwareInput(options.userMessage, options.conversationHistory)
 
   const runAttempt = async (previousResponseId: string | null) => {
     let responseText = ""
@@ -166,7 +258,7 @@ async function streamAssistantResponse(options: {
     const stream = await openai.responses.create({
       model: OPENAI_MODEL,
       instructions,
-      input: options.userMessage,
+      input,
       previous_response_id: previousResponseId ?? undefined,
       store: true,
       stream: true,
@@ -225,6 +317,7 @@ export async function POST(req: Request) {
     typeof body.previousResponseId === "string" && body.previousResponseId.trim()
       ? body.previousResponseId.trim()
       : null
+  const conversationHistory = sanitizeConversationHistory(body.conversationHistory)
 
   if (!userMessage) {
     return NextResponse.json({ error: "userMessage is required." }, { status: 400 })
@@ -242,6 +335,7 @@ export async function POST(req: Request) {
           userMessage,
           preference,
           previousResponseId,
+          conversationHistory,
           onToken: (delta) => {
             sendEvent("token", { delta })
           },
