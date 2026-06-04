@@ -1298,7 +1298,7 @@ export default function FilmPulse() {
       </div>
 
       <div className="mt-8 text-center text-gray-400 text-sm">
-        <p>Powered by TMDB and OpenAI</p>
+        <p>Powered by TMDB</p>
       </div>
 
       <footer style={{ textAlign: "center", paddingTop: "20px" }}>

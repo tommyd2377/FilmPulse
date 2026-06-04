@@ -10,8 +10,10 @@ const TMDB_REGION = (process.env.TMDB_REGION ?? "US").trim().toUpperCase() || "U
 const TMDB_BASE_URL = "https://api.themoviedb.org/3"
 const TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 const TARGET_RECOMMENDATION_COUNT = 5
-const MAX_CANDIDATE_POOL_SIZE = 80
-const DISCOVERY_PAGE_COUNT = 3
+const MAX_CANDIDATE_POOL_SIZE = 36
+const MAX_AVAILABILITY_CHECK_CANDIDATES = 24
+const AVAILABILITY_BATCH_SIZE = 6
+const DISCOVERY_PAGE_COUNT = 2
 const DEFAULT_WATCH_PREFERENCES: WatchPreferences = {
   mode: "any",
   streamingProviders: [],
@@ -597,6 +599,21 @@ async function fetchTmdbJson<T>(path: string, params: Record<string, string | nu
 let genreMapCache: Map<number, string> | null = null
 let watchProviderCache: { expiresAt: number; providers: TmdbWatchProvider[] } | null = null
 
+async function mapInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  mapper: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = []
+
+  for (let index = 0; index < items.length; index += batchSize) {
+    const batch = items.slice(index, index + batchSize)
+    results.push(...(await Promise.all(batch.map(mapper))))
+  }
+
+  return results
+}
+
 async function getGenreMap(): Promise<Map<number, string>> {
   if (genreMapCache) {
     return genreMapCache
@@ -727,6 +744,7 @@ function recommendationFromCandidate(candidate: CandidateMovie, reason?: string)
 }
 
 let nowPlayingCache: { expiresAt: number; ids: Set<number> } | null = null
+let nowPlayingRequest: Promise<Set<number>> | null = null
 
 function providerNames(providers?: TmdbWatchProvider[]): string[] {
   return [...new Set((providers ?? []).map((provider) => provider.provider_name).filter(Boolean))]
@@ -772,33 +790,52 @@ async function getNowPlayingMovieIds(): Promise<Set<number>> {
     return nowPlayingCache.ids
   }
 
-  const pages = await Promise.all(
-    Array.from({ length: DISCOVERY_PAGE_COUNT }, (_, index) =>
-      fetchTmdbJson<TmdbListResponse>("/movie/now_playing", { region: TMDB_REGION, page: index + 1 })
-    )
-  )
-  const ids = new Set<number>()
+  if (nowPlayingRequest) {
+    return nowPlayingRequest
+  }
 
-  for (const page of pages) {
-    for (const movie of page?.results ?? []) {
-      if (Number.isInteger(movie.id)) {
-        ids.add(movie.id)
+  nowPlayingRequest = (async () => {
+    const pages = await Promise.all(
+      Array.from({ length: DISCOVERY_PAGE_COUNT }, (_, index) =>
+        fetchTmdbJson<TmdbListResponse>("/movie/now_playing", { region: TMDB_REGION, page: index + 1 })
+      )
+    )
+    const ids = new Set<number>()
+
+    for (const page of pages) {
+      for (const movie of page?.results ?? []) {
+        if (Number.isInteger(movie.id)) {
+          ids.add(movie.id)
+        }
       }
     }
-  }
 
-  nowPlayingCache = {
-    expiresAt: now + 1000 * 60 * 15,
-    ids,
-  }
+    nowPlayingCache = {
+      expiresAt: now + 1000 * 60 * 15,
+      ids,
+    }
 
-  return ids
+    return ids
+  })()
+
+  try {
+    return await nowPlayingRequest
+  } finally {
+    nowPlayingRequest = null
+  }
 }
 
-async function fetchMovieAvailability(movie: RecommendedMovie): Promise<MovieAvailability> {
+async function fetchMovieAvailability(
+  movie: RecommendedMovie,
+  options: { includeTheaters?: boolean; includeWatchProviders?: boolean } = {}
+): Promise<MovieAvailability> {
+  const includeTheaters = options.includeTheaters ?? true
+  const includeWatchProviders = options.includeWatchProviders ?? true
   const [watchProviders, nowPlayingIds] = await Promise.all([
-    fetchTmdbJson<TmdbWatchProviderResponse>(`/movie/${movie.tmdbId}/watch/providers`),
-    getNowPlayingMovieIds(),
+    includeWatchProviders
+      ? fetchTmdbJson<TmdbWatchProviderResponse>(`/movie/${movie.tmdbId}/watch/providers`)
+      : Promise.resolve(null),
+    includeTheaters ? getNowPlayingMovieIds() : Promise.resolve(new Set<number>()),
   ])
   const regionProviders = watchProviders?.results?.[TMDB_REGION]
   const streaming = providerNames(regionProviders?.flatrate)
@@ -822,24 +859,35 @@ async function enrichAvailability(movies: RecommendedMovie[]): Promise<Recommend
     return movies
   }
 
-  return Promise.all(
-    movies.map(async (movie) => ({
-      ...movie,
-      availability: movie.availability ?? (await fetchMovieAvailability(movie)),
-    }))
-  )
+  return mapInBatches(movies, AVAILABILITY_BATCH_SIZE, async (movie) => ({
+    ...movie,
+    availability: movie.availability ?? (await fetchMovieAvailability(movie)),
+  }))
 }
 
-async function enrichCandidateAvailability(candidates: CandidateMovie[]): Promise<CandidateMovie[]> {
+async function enrichCandidateAvailability(
+  candidates: CandidateMovie[],
+  preferences: WatchPreferences
+): Promise<CandidateMovie[]> {
   if (!TMDB_API_KEY || candidates.length === 0) {
     return candidates
   }
 
-  return Promise.all(
-    candidates.map(async (candidate) => ({
+  const includeTheaters = preferences.mode === "theaters"
+  const includeWatchProviders = preferences.mode === "home"
+
+  return mapInBatches(
+    candidates.slice(0, MAX_AVAILABILITY_CHECK_CANDIDATES),
+    AVAILABILITY_BATCH_SIZE,
+    async (candidate) => ({
       ...candidate,
-      availability: candidate.availability ?? (await fetchMovieAvailability(candidate)),
-    }))
+      availability:
+        candidate.availability ??
+        (await fetchMovieAvailability(candidate, {
+          includeTheaters,
+          includeWatchProviders,
+        })),
+    })
   )
 }
 
@@ -936,7 +984,7 @@ async function applyWatchPreferencesToCandidates(
     return candidates
   }
 
-  const candidatesWithAvailability = await enrichCandidateAvailability(candidates)
+  const candidatesWithAvailability = await enrichCandidateAvailability(candidates, preferences)
   return candidatesWithAvailability
     .filter((candidate) => movieMatchesWatchPreferences(candidate, preferences))
     .map((candidate) => ({
@@ -1717,6 +1765,8 @@ export async function POST(req: Request) {
       const sendEvent = (event: string, data: unknown) => {
         controller.enqueue(encoder.encode(createSSEEvent(event, data)))
       }
+
+      sendEvent("status", { status: "finding" })
 
       try {
         let recommendationContext: RecommendationContext = { movies: [], analysis: null }
