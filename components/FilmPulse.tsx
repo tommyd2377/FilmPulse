@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState, FormEvent, ChangeEvent } from "react"
+import { useEffect, useRef, useState, FormEvent, ChangeEvent } from "react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -78,6 +78,7 @@ interface BrowserSpeechRecognitionResult {
 }
 
 interface BrowserSpeechRecognitionEvent extends Event {
+  resultIndex: number
   results: {
     length: number
     [index: number]: BrowserSpeechRecognitionResult
@@ -85,7 +86,7 @@ interface BrowserSpeechRecognitionEvent extends Event {
 }
 
 interface BrowserSpeechRecognitionErrorEvent extends Event {
-  error: string
+  error?: string
 }
 
 interface BrowserSpeechRecognition extends EventTarget {
@@ -95,8 +96,10 @@ interface BrowserSpeechRecognition extends EventTarget {
   onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null
   onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null
   onend: (() => void) | null
+  onstart: (() => void) | null
   start(): void
   stop(): void
+  abort(): void
 }
 
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
@@ -105,6 +108,8 @@ type SpeechRecognitionWindow = Window & {
   SpeechRecognition?: BrowserSpeechRecognitionConstructor
   webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
 }
+
+type DictationMode = "idle" | "native" | "recording" | "transcribing"
 
 interface TmdbMovieListItem {
   id: number
@@ -143,6 +148,8 @@ interface TmdbWatchProviderResponse {
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
 const TMDB_REGION = (process.env.NEXT_PUBLIC_TMDB_REGION ?? "US").trim().toUpperCase() || "US"
 const TMDB_BASE_URL = "https://api.themoviedb.org/3"
+const DICTATION_OFF_STATUS = "Dictation is off."
+const NATIVE_SPEECH_FALLBACK_ERRORS = new Set(["network", "service-not-allowed"])
 const WATCH_PROVIDER_OPTIONS: WatchProviderOption[] = [
   { label: "Netflix", value: "Netflix" },
   { label: "Prime Video", value: "Amazon Prime Video" },
@@ -158,6 +165,127 @@ const WATCH_PROVIDER_OPTIONS: WatchProviderOption[] = [
 
 let nowPlayingCache: { expiresAt: number; ids: Set<number> } | null = null
 let nowPlayingRequest: Promise<Set<number>> | null = null
+
+function getSpeechRecognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const speechWindow = window as SpeechRecognitionWindow
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function hasMediaRecorderSupport(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return false
+  }
+
+  return Boolean(
+    navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function" &&
+      typeof MediaRecorder !== "undefined"
+  )
+}
+
+function getSupportedDictationMimeType(): string {
+  if (typeof MediaRecorder === "undefined") {
+    return ""
+  }
+
+  return (
+    [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/mpeg",
+    ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? ""
+  )
+}
+
+function dictationAudioFileName(mimeType: string): string {
+  if (mimeType.includes("mp4")) {
+    return "dictation.m4a"
+  }
+  if (mimeType.includes("mpeg")) {
+    return "dictation.mp3"
+  }
+  return "dictation.webm"
+}
+
+function dictationErrorStatus(error?: string): string {
+  switch (error) {
+    case "audio-capture":
+      return "No microphone input was detected. Check browser and macOS microphone access."
+    case "network":
+      return "Speech recognition could not reach the browser speech service. Recording audio instead may work."
+    case "no-speech":
+      return "No speech was detected. Click the mic again and start speaking right away."
+    case "not-allowed":
+      return "Microphone access was not allowed."
+    case "service-not-allowed":
+      return "The browser blocked the speech recognition service. Recording audio instead may work."
+    case "aborted":
+      return "Dictation was cancelled."
+    default:
+      return error ? `Dictation stopped: ${error}.` : "Dictation stopped before speech was recognized."
+  }
+}
+
+function dictationRecordingErrorStatus(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : ""
+
+  switch (name) {
+    case "NotAllowedError":
+    case "PermissionDeniedError":
+      return "Microphone access was not allowed."
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "No microphone was found."
+    case "NotReadableError":
+      return "The microphone is unavailable or already in use."
+    case "SecurityError":
+      return "This browser blocked microphone access for this page."
+    default:
+      return "Dictation recording could not start."
+  }
+}
+
+function dictationButtonLabel(mode: DictationMode, supported: boolean): string {
+  if (!supported) {
+    return "Dictation is not supported in this browser"
+  }
+  if (mode === "transcribing") {
+    return "Transcribing dictation"
+  }
+  if (mode === "recording") {
+    return "Stop and transcribe dictation"
+  }
+  if (mode === "native") {
+    return "Stop dictation"
+  }
+  return "Start dictation"
+}
+
+async function transcribeDictationAudio(audio: Blob, mimeType: string): Promise<string> {
+  const formData = new FormData()
+  formData.append("audio", audio, dictationAudioFileName(mimeType))
+
+  const response = await fetch("/api/dictation/transcribe", {
+    method: "POST",
+    body: formData,
+  })
+  const payload = (await response.json().catch(() => ({}))) as { text?: unknown; error?: unknown }
+
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.error === "string" && payload.error.trim()
+        ? payload.error
+        : "Could not transcribe dictation."
+    )
+  }
+
+  return typeof payload.text === "string" ? payload.text.trim() : ""
+}
 
 function WebsiteIcon() {
   return <Globe size={24} style={{ margin: "0 10px", color: "white" }} aria-hidden="true" />
@@ -735,7 +863,8 @@ export default function FilmPulse() {
   const [isLoading, setIsLoading] = useState(false)
   const [lastResponseId, setLastResponseId] = useState<string | null>(null)
   const lastResponseIdRef = useRef<string | null>(null)
-  const [isDictating, setIsDictating] = useState(false)
+  const [dictationMode, setDictationModeState] = useState<DictationMode>("idle")
+  const [dictationStatus, setDictationStatus] = useState(DICTATION_OFF_STATUS)
   const [dictationSupported, setDictationSupported] = useState(true)
   const [preference, setPreference] = useState(0.5)
   const [watchMode, setWatchMode] = useState<WatchMode>("any")
@@ -743,10 +872,33 @@ export default function FilmPulse() {
   const [includeRentals, setIncludeRentals] = useState(false)
   const [feedbackEvents, setFeedbackEvents] = useState<FeedbackEvent[]>([])
   const feedbackEventsRef = useRef<FeedbackEvent[]>([])
+  const inputRef = useRef<HTMLInputElement | null>(null)
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
-  const dictationBaseTextRef = useRef("")
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const discardRecordingRef = useRef(false)
+  const manualStopRef = useRef(false)
+  const nativeFallbackInProgressRef = useRef(false)
+  const lastDictationErrorRef = useRef<string | null>(null)
+  const nativeStartedAtRef = useRef(0)
+  const dictationModeRef = useRef<DictationMode>("idle")
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    return () => {
+      manualStopRef.current = true
+      recognitionRef.current?.abort()
+      discardRecordingRef.current = true
+
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop()
+      }
+
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
+    }
+  }, [])
 
   const updateMessageById = (messageId: string, updater: (message: Message) => Message) => {
     setMessages((prevMessages) =>
@@ -861,92 +1013,297 @@ export default function FilmPulse() {
     })
   }
 
-  const stopDictation = () => {
-    const recognition = recognitionRef.current
+  const setDictationMode = (nextMode: DictationMode) => {
+    dictationModeRef.current = nextMode
+    setDictationModeState(nextMode)
+  }
 
-    if (recognition) {
-      recognition.onend = null
+  const appendDictationText = (transcript: string) => {
+    const cleanTranscript = transcript.trim()
 
-      try {
-        recognition.stop()
-      } catch {
-        // SpeechRecognition can throw if the session has already ended.
+    if (!cleanTranscript) {
+      return
+    }
+
+    const inputElement = inputRef.current
+
+    setInputText((currentValue) => {
+      const selectionStart = inputElement?.selectionStart ?? currentValue.length
+      const selectionEnd = inputElement?.selectionEnd ?? currentValue.length
+      const before = currentValue.slice(0, selectionStart)
+      const after = currentValue.slice(selectionEnd)
+      const leadingSpace = before && !/\s$/.test(before) ? " " : ""
+      const trailingSpace = after && !/^[\s.,!?;:)]/.test(after) ? " " : ""
+      const insertion = `${leadingSpace}${cleanTranscript}${trailingSpace}`
+      const nextValue = `${before}${insertion}${after}`
+      const nextCursor = before.length + insertion.length
+
+      requestAnimationFrame(() => {
+        if (!inputElement) {
+          return
+        }
+
+        try {
+          inputElement.selectionStart = nextCursor
+          inputElement.selectionEnd = nextCursor
+        } catch {
+          // Some input types do not expose text selection. The dictated text still lands.
+        }
+      })
+
+      return nextValue
+    })
+  }
+
+  const stopMediaStream = () => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
+    mediaStreamRef.current = null
+  }
+
+  const transcribeRecording = async (audio: Blob, mimeType: string) => {
+    if (!audio.size) {
+      setDictationMode("idle")
+      setDictationStatus("No speech was recorded.")
+      return
+    }
+
+    setDictationMode("transcribing")
+    setDictationStatus("Transcribing dictation...")
+
+    try {
+      const transcript = await transcribeDictationAudio(audio, mimeType)
+      appendDictationText(transcript)
+      setDictationStatus(transcript ? "Added dictation." : "No speech was transcribed.")
+    } catch (error) {
+      setDictationStatus(error instanceof Error ? error.message : "Dictation could not be transcribed.")
+    } finally {
+      setDictationMode("idle")
+    }
+  }
+
+  const startRecordingFallback = async () => {
+    if (!hasMediaRecorderSupport() || isLoading) {
+      setDictationSupported(Boolean(getSpeechRecognitionConstructor()))
+      setDictationMode("idle")
+      setDictationStatus("Dictation recording is not available in this browser.")
+      return
+    }
+
+    let stream: MediaStream | null = null
+
+    try {
+      setDictationStatus("Starting microphone recording...")
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+      if (isLoading) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
       }
+
+      const mimeType = getSupportedDictationMimeType()
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+
+      audioChunksRef.current = []
+      discardRecordingRef.current = false
+      mediaStreamRef.current = stream
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onerror = () => {
+        discardRecordingRef.current = true
+        mediaRecorderRef.current = null
+        stopMediaStream()
+        setDictationMode("idle")
+        setDictationStatus("Dictation recording failed.")
+      }
+
+      recorder.onstop = () => {
+        const chunks = audioChunksRef.current
+        const shouldDiscard = discardRecordingRef.current
+        const recordedMimeType = recorder.mimeType || mimeType || "audio/webm"
+
+        audioChunksRef.current = []
+        discardRecordingRef.current = false
+        mediaRecorderRef.current = null
+        stopMediaStream()
+
+        if (shouldDiscard) {
+          return
+        }
+
+        const audio = new Blob(chunks, { type: recordedMimeType })
+        void transcribeRecording(audio, recordedMimeType)
+      }
+
+      recorder.start()
+      inputRef.current?.focus()
+      setDictationSupported(true)
+      setDictationMode("recording")
+      setDictationStatus("Recording. Click the microphone again to transcribe.")
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop())
+      setDictationMode("idle")
+      setDictationStatus(dictationRecordingErrorStatus(error))
+    }
+  }
+
+  const stopRecording = (shouldTranscribe = true) => {
+    const recorder = mediaRecorderRef.current
+
+    if (!recorder || recorder.state === "inactive") {
+      return
+    }
+
+    discardRecordingRef.current = !shouldTranscribe
+    recorder.stop()
+
+    if (shouldTranscribe) {
+      setDictationMode("transcribing")
+      setDictationStatus("Transcribing dictation...")
+      return
+    }
+
+    setDictationMode("idle")
+    setDictationStatus(DICTATION_OFF_STATUS)
+  }
+
+  const stopDictation = () => {
+    if (dictationModeRef.current === "recording") {
+      stopRecording(true)
+      return
+    }
+
+    if (dictationModeRef.current === "transcribing") {
+      return
+    }
+
+    manualStopRef.current = true
+
+    try {
+      recognitionRef.current?.stop()
+    } catch {
+      recognitionRef.current?.abort()
     }
 
     recognitionRef.current = null
-    setIsDictating(false)
+    setDictationMode("idle")
+    setDictationStatus("Dictation stopped.")
   }
 
-  const handleDictationClick = () => {
+  const startDictation = () => {
     if (isLoading) {
       return
     }
 
-    if (isDictating) {
-      stopDictation()
-      return
-    }
-
-    if (typeof window === "undefined") {
-      return
-    }
-
-    const speechWindow = window as SpeechRecognitionWindow
-    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
+    const SpeechRecognition = getSpeechRecognitionConstructor()
 
     if (!SpeechRecognition) {
-      setDictationSupported(false)
+      void startRecordingFallback()
       return
     }
 
+    manualStopRef.current = true
+    recognitionRef.current?.abort()
+    manualStopRef.current = false
+    nativeFallbackInProgressRef.current = false
+    lastDictationErrorRef.current = null
+    nativeStartedAtRef.current = 0
+
     const recognition = new SpeechRecognition()
-    dictationBaseTextRef.current = inputText
-    recognition.continuous = false
-    recognition.interimResults = true
+    recognition.continuous = true
+    recognition.interimResults = false
     recognition.lang = navigator.language || "en-US"
 
+    recognition.onstart = () => {
+      nativeStartedAtRef.current = Date.now()
+      setDictationSupported(true)
+      setDictationMode("native")
+      setDictationStatus("Listening. Start speaking, then click the microphone to stop.")
+    }
+
     recognition.onresult = (event) => {
-      const transcriptParts: string[] = []
+      let transcript = ""
 
-      for (let index = 0; index < event.results.length; index += 1) {
-        const transcript = event.results[index][0]?.transcript
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index]
 
-        if (transcript) {
-          transcriptParts.push(transcript)
+        if (result.isFinal) {
+          transcript += ` ${result[0].transcript}`
         }
       }
 
-      const transcript = transcriptParts.join(" ").replace(/\s+/g, " ").trim()
+      appendDictationText(transcript)
+    }
 
-      if (!transcript) {
+    recognition.onerror = (event) => {
+      const error = event.error ?? "unknown"
+      lastDictationErrorRef.current = error
+
+      if (NATIVE_SPEECH_FALLBACK_ERRORS.has(error) && hasMediaRecorderSupport()) {
+        nativeFallbackInProgressRef.current = true
+        setDictationStatus("Browser speech service failed. Recording audio instead...")
+        void startRecordingFallback()
         return
       }
 
-      const baseText = dictationBaseTextRef.current
-      const separator = baseText.trim().length > 0 && !/\s$/.test(baseText) ? " " : ""
-      setInputText(`${baseText}${separator}${transcript}`)
-    }
-
-    recognition.onerror = () => {
       recognitionRef.current = null
-      setIsDictating(false)
+      setDictationMode("idle")
+      setDictationStatus(dictationErrorStatus(error))
     }
 
     recognition.onend = () => {
       recognitionRef.current = null
-      setIsDictating(false)
+
+      if (nativeFallbackInProgressRef.current) {
+        nativeFallbackInProgressRef.current = false
+        return
+      }
+
+      const endedQuickly =
+        nativeStartedAtRef.current === 0 || Date.now() - nativeStartedAtRef.current < 1200
+
+      if (!manualStopRef.current && !lastDictationErrorRef.current && endedQuickly && hasMediaRecorderSupport()) {
+        void startRecordingFallback()
+        return
+      }
+
+      setDictationMode("idle")
+
+      if (manualStopRef.current) {
+        manualStopRef.current = false
+        setDictationStatus("Dictation stopped.")
+        return
+      }
+
+      if (!lastDictationErrorRef.current) {
+        setDictationStatus("Dictation ended. Click the mic to start again.")
+      }
     }
 
     recognitionRef.current = recognition
-    setIsDictating(true)
+    inputRef.current?.focus()
+    setDictationStatus("Starting dictation...")
 
     try {
       recognition.start()
     } catch {
       recognitionRef.current = null
-      setIsDictating(false)
+      void startRecordingFallback()
     }
+  }
+
+  const handleDictationClick = () => {
+    if (dictationModeRef.current === "idle") {
+      startDictation()
+      return
+    }
+
+    stopDictation()
   }
 
   const fetchMoviesWithPosters = async (movieTitles: string[]): Promise<RecommendedMovie[]> => {
@@ -1235,6 +1592,10 @@ export default function FilmPulse() {
         ? "border-pink-400/70 bg-pink-500/20 text-white"
         : "border-gray-600 bg-gray-800/70 text-gray-300 hover:bg-gray-700"
     }`
+  const isDictating = dictationMode === "native" || dictationMode === "recording"
+  const isTranscribingDictation = dictationMode === "transcribing"
+  const dictationLabel = dictationButtonLabel(dictationMode, dictationSupported)
+  const dictationTitle = dictationStatus === DICTATION_OFF_STATUS ? dictationLabel : dictationStatus
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white py-8">
@@ -1418,6 +1779,7 @@ export default function FilmPulse() {
             <form onSubmit={handleSubmit} className="flex gap-2 mt-4">
               <div className="relative flex-grow">
                 <Input
+                  ref={inputRef}
                   type="text"
                   value={inputText}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setInputText(e.target.value)}
@@ -1428,23 +1790,27 @@ export default function FilmPulse() {
                 <button
                   type="button"
                   onClick={handleDictationClick}
-                  disabled={isLoading || !dictationSupported}
-                  aria-label={isDictating ? "Stop dictation" : "Start dictation"}
-                  title={
-                    dictationSupported
-                      ? isDictating
-                        ? "Stop dictation"
-                        : "Start dictation"
-                      : "Dictation is not supported in this browser"
-                  }
+                  onMouseDown={(event) => event.preventDefault()}
+                  disabled={isLoading || !dictationSupported || isTranscribingDictation}
+                  aria-label={dictationLabel}
+                  title={dictationTitle}
                   className={`absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border transition-colors ${
-                    isDictating
+                    isDictating || isTranscribingDictation
                       ? "border-pink-300/70 bg-pink-500/25 text-pink-100"
                       : "border-gray-500/70 bg-gray-800/80 text-gray-300 hover:border-purple-300/70 hover:bg-purple-500/20 hover:text-white"
                   } disabled:cursor-not-allowed disabled:opacity-45`}
                 >
-                  {isDictating ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  {isTranscribingDictation ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : isDictating ? (
+                    <MicOff className="h-4 w-4" />
+                  ) : (
+                    <Mic className="h-4 w-4" />
+                  )}
                 </button>
+                <span className="sr-only" aria-live="polite">
+                  {dictationStatus}
+                </span>
               </div>
               <Button
                 type="submit"
