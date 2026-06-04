@@ -7,7 +7,8 @@ AI-powered film discovery companion built on Next.js 14 that curates indie gems,
 - Chat generation now runs server-side through the OpenAI **Responses API** in `app/api/getRecommendation/route.ts`.
 - The client streams assistant text in real time over SSE for a more natural conversational feel.
 - The route uses stateful conversation continuity via `previous_response_id`.
-- After generation, a structured extraction pass returns movie titles as JSON, then TMDB enrichment adds posters, release years, genres, and links.
+- Before generation, the route can analyze the user's taste, resolve seed films through TMDB, build a candidate set, and rerank those candidates with OpenAI.
+- After generation, metadata returns server-enriched movie cards when available, with title extraction + client TMDB enrichment kept as a fallback.
 
 ## How It Works
 1. User submits a message and slider preference in `components/FilmPulse.tsx`.
@@ -15,20 +16,24 @@ AI-powered film discovery companion built on Next.js 14 that curates indie gems,
    - `userMessage`
    - `preference`
    - `previousResponseId` (optional)
-3. Route calls `openai.responses.create({ stream: true })` with model instructions tuned for a warm, conversational movie concierge style.
-4. Route emits SSE events:
+   - `feedbackEvents` (optional session-only movie feedback)
+   - `watchPreferences` (optional theater/streaming/rental filters)
+3. Route analyzes taste, resolves TMDB seed films, gathers similar/recommended candidates, applies watch filters, and reranks candidates when enough data is available.
+4. Route calls `openai.responses.create({ stream: true })` with model instructions tuned for a warm, conversational movie concierge style. If candidate reranking succeeded, the model is instructed to recommend only the selected movies.
+5. Route emits SSE events:
    - `token` for text deltas
-   - `metadata` with `{ responseId, movieTitles }`
+   - `metadata` with `{ responseId, movieTitles, movies }`
    - `error` for failures
    - `done` when complete
-5. Client appends token deltas into the bot message as they arrive.
-6. Client enriches `movieTitles` with TMDB poster/details data and renders recommendation cards.
-7. If structured extraction returns no titles, client falls back to bold-title regex extraction.
+6. Client appends token deltas into the bot message as they arrive.
+7. Client renders server-returned `movies` first, then falls back to `movieTitles` enrichment if needed.
+8. Card actions record session-only feedback for "more like this", "like/liked", "love/loved", and "not interested".
 
 ## API Footprint
-- **OpenAI Responses API** (`gpt-5.2` default): primary generation path, streamed.
+- **OpenAI Responses API** (`gpt-5.5` default): primary generation path, streamed.
+- **OpenAI Responses API** (`gpt-5.4-mini` default): structured taste analysis and candidate reranking.
 - **OpenAI Responses API** (`gpt-5-mini` default): structured title extraction pass.
-- **TMDB Search + Movie Details API**: enrichment layer for posters and metadata.
+- **TMDB Search + Movie Details + Similar + Recommendations + Watch Providers + Now Playing APIs**: server-side candidate layer, fallback enrichment, availability badges, and theater status.
 
 ## Route Contract
 `POST /api/getRecommendation`
@@ -39,7 +44,19 @@ Request body:
 {
   "userMessage": "string",
   "preference": 0.5,
-  "previousResponseId": "resp_optional"
+  "previousResponseId": "resp_optional",
+  "watchPreferences": {
+    "mode": "home",
+    "streamingProviders": ["Netflix", "Max"],
+    "includeRentals": false
+  },
+  "feedbackEvents": [
+    {
+      "type": "more_like_this",
+      "title": "Movie title",
+      "tmdbId": 123
+    }
+  ]
 }
 ```
 
@@ -50,7 +67,7 @@ event: token
 data: {"delta":"..."}
 
 event: metadata
-data: {"responseId":"resp_...","movieTitles":["..."]}
+data: {"responseId":"resp_...","movieTitles":["..."],"movies":[{"tmdbId":123,"title":"..."}]}
 
 event: error
 data: {"message":"..."}
@@ -70,8 +87,10 @@ npm install
 
 ```bash
 OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-5.2
+OPENAI_MODEL=gpt-5.5
+OPENAI_RANK_MODEL=gpt-5.4-mini
 OPENAI_EXTRACT_MODEL=gpt-5-mini
+TMDB_API_KEY=your_tmdb_key
 NEXT_PUBLIC_TMDB_API_KEY=your_tmdb_key
 ```
 
@@ -87,5 +106,6 @@ npm run dev
 - OpenAI keys are now server-only (`OPENAI_API_KEY`), not exposed in browser code.
 - SDK is pinned to `openai@^6.22.0`.
 - Stateful conversation is enabled with `store: true` + `previous_response_id`.
+- Session feedback is not persisted yet. Real cross-user "people who liked this also liked" signals should be added with a database-backed feedback table in a later pass.
 
 Have ideas or spot a great film pairing? Open an issue or reach out at [@thomasfdevito](https://x.com/thomasfdevito).
