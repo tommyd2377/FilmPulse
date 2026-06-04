@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faTwitter, faTelegram, faLinkedin, faGithub } from '@fortawesome/free-brands-svg-icons'
-import { Globe, Loader2, Play, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
+import { Globe, Heart, Loader2, Mic, MicOff, Play, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 
 interface MovieAvailability {
@@ -65,6 +65,45 @@ interface WatchPreferences {
 interface WatchProviderOption {
   label: string
   value: string
+}
+
+interface BrowserSpeechRecognitionAlternative {
+  transcript: string
+}
+
+interface BrowserSpeechRecognitionResult {
+  isFinal: boolean
+  length: number
+  [index: number]: BrowserSpeechRecognitionAlternative
+}
+
+interface BrowserSpeechRecognitionEvent extends Event {
+  results: {
+    length: number
+    [index: number]: BrowserSpeechRecognitionResult
+  }
+}
+
+interface BrowserSpeechRecognitionErrorEvent extends Event {
+  error: string
+}
+
+interface BrowserSpeechRecognition extends EventTarget {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null
+  onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null
+  onend: (() => void) | null
+  start(): void
+  stop(): void
+}
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
+
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: BrowserSpeechRecognitionConstructor
+  webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
 }
 
 interface TmdbMovieListItem {
@@ -696,12 +735,16 @@ export default function FilmPulse() {
   const [isLoading, setIsLoading] = useState(false)
   const [lastResponseId, setLastResponseId] = useState<string | null>(null)
   const lastResponseIdRef = useRef<string | null>(null)
+  const [isDictating, setIsDictating] = useState(false)
+  const [dictationSupported, setDictationSupported] = useState(true)
   const [preference, setPreference] = useState(0.5)
   const [watchMode, setWatchMode] = useState<WatchMode>("any")
   const [selectedStreamingProviders, setSelectedStreamingProviders] = useState<string[]>([])
   const [includeRentals, setIncludeRentals] = useState(false)
   const [feedbackEvents, setFeedbackEvents] = useState<FeedbackEvent[]>([])
   const feedbackEventsRef = useRef<FeedbackEvent[]>([])
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
+  const dictationBaseTextRef = useRef("")
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
@@ -818,6 +861,94 @@ export default function FilmPulse() {
     })
   }
 
+  const stopDictation = () => {
+    const recognition = recognitionRef.current
+
+    if (recognition) {
+      recognition.onend = null
+
+      try {
+        recognition.stop()
+      } catch {
+        // SpeechRecognition can throw if the session has already ended.
+      }
+    }
+
+    recognitionRef.current = null
+    setIsDictating(false)
+  }
+
+  const handleDictationClick = () => {
+    if (isLoading) {
+      return
+    }
+
+    if (isDictating) {
+      stopDictation()
+      return
+    }
+
+    if (typeof window === "undefined") {
+      return
+    }
+
+    const speechWindow = window as SpeechRecognitionWindow
+    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
+
+    if (!SpeechRecognition) {
+      setDictationSupported(false)
+      return
+    }
+
+    const recognition = new SpeechRecognition()
+    dictationBaseTextRef.current = inputText
+    recognition.continuous = false
+    recognition.interimResults = true
+    recognition.lang = navigator.language || "en-US"
+
+    recognition.onresult = (event) => {
+      const transcriptParts: string[] = []
+
+      for (let index = 0; index < event.results.length; index += 1) {
+        const transcript = event.results[index][0]?.transcript
+
+        if (transcript) {
+          transcriptParts.push(transcript)
+        }
+      }
+
+      const transcript = transcriptParts.join(" ").replace(/\s+/g, " ").trim()
+
+      if (!transcript) {
+        return
+      }
+
+      const baseText = dictationBaseTextRef.current
+      const separator = baseText.trim().length > 0 && !/\s$/.test(baseText) ? " " : ""
+      setInputText(`${baseText}${separator}${transcript}`)
+    }
+
+    recognition.onerror = () => {
+      recognitionRef.current = null
+      setIsDictating(false)
+    }
+
+    recognition.onend = () => {
+      recognitionRef.current = null
+      setIsDictating(false)
+    }
+
+    recognitionRef.current = recognition
+    setIsDictating(true)
+
+    try {
+      recognition.start()
+    } catch {
+      recognitionRef.current = null
+      setIsDictating(false)
+    }
+  }
+
   const fetchMoviesWithPosters = async (movieTitles: string[]): Promise<RecommendedMovie[]> => {
     const titles = sanitizeMovieTitles(movieTitles)
 
@@ -879,6 +1010,8 @@ export default function FilmPulse() {
     if (!userMessage || isLoading) {
       return
     }
+
+    stopDictation()
 
     const userMessageId = createMessageId("user")
     const botMessageId = createMessageId("bot")
@@ -974,6 +1107,9 @@ export default function FilmPulse() {
             if (typeof metadata.responseId === "string" && metadata.responseId.trim()) {
               lastResponseIdRef.current = metadata.responseId
               setLastResponseId(metadata.responseId)
+            } else if (metadata.responseId === null) {
+              lastResponseIdRef.current = null
+              setLastResponseId(null)
             }
 
             if (Array.isArray(metadata.movieTitles)) {
@@ -1047,7 +1183,10 @@ export default function FilmPulse() {
           return
         }
 
-        const movieTitles = sanitizeMovieTitles([...metadataMovieTitles, ...extractMovieTitles(streamedResponseText)])
+        const movieTitles =
+          metadataMovieTitles.length > 0
+            ? metadataMovieTitles
+            : sanitizeMovieTitles(extractMovieTitles(streamedResponseText))
         const moviesWithPosters =
           metadataMovies.length > 0 ? metadataMovies : await fetchMoviesWithPosters(movieTitles)
 
@@ -1277,14 +1416,36 @@ export default function FilmPulse() {
             </div>
 
             <form onSubmit={handleSubmit} className="flex gap-2 mt-4">
-              <Input
-                type="text"
-                value={inputText}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setInputText(e.target.value)}
-                placeholder="Enter movies you like..."
-                disabled={isLoading}
-                className="flex-grow bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:border-pink-500 selection:bg-pink-500/40 selection:text-white"
-              />
+              <div className="relative flex-grow">
+                <Input
+                  type="text"
+                  value={inputText}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setInputText(e.target.value)}
+                  placeholder="Enter movies you like..."
+                  disabled={isLoading}
+                  className="w-full bg-gray-700 border-gray-600 pr-12 text-white placeholder-gray-400 focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:border-pink-500 selection:bg-pink-500/40 selection:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleDictationClick}
+                  disabled={isLoading || !dictationSupported}
+                  aria-label={isDictating ? "Stop dictation" : "Start dictation"}
+                  title={
+                    dictationSupported
+                      ? isDictating
+                        ? "Stop dictation"
+                        : "Start dictation"
+                      : "Dictation is not supported in this browser"
+                  }
+                  className={`absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border transition-colors ${
+                    isDictating
+                      ? "border-pink-300/70 bg-pink-500/25 text-pink-100"
+                      : "border-gray-500/70 bg-gray-800/80 text-gray-300 hover:border-purple-300/70 hover:bg-purple-500/20 hover:text-white"
+                  } disabled:cursor-not-allowed disabled:opacity-45`}
+                >
+                  {isDictating ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
+              </div>
               <Button
                 type="submit"
                 disabled={isLoading}
@@ -1342,7 +1503,16 @@ export default function FilmPulse() {
             color: "white",
           }}
         >
-          Made with <span style={{ color: "#e25555", fontSize: "24px" }}>&hearts;</span> in NYC
+          <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}>
+            Made with{" "}
+            <Heart
+              aria-hidden="true"
+              className="h-[1.15em] w-[1.15em] translate-y-[0.06em] text-[#e25555]"
+              fill="currentColor"
+              strokeWidth={0}
+            />{" "}
+            in NYC
+          </span>
         </div>
       </footer>
     </div>

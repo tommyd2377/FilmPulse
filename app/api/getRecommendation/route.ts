@@ -10,7 +10,7 @@ const TMDB_REGION = (process.env.TMDB_REGION ?? "US").trim().toUpperCase() || "U
 const TMDB_BASE_URL = "https://api.themoviedb.org/3"
 const TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 const TARGET_RECOMMENDATION_COUNT = 5
-const MAX_CANDIDATE_POOL_SIZE = 36
+const MAX_CANDIDATE_POOL_SIZE = 60
 const MAX_AVAILABILITY_CHECK_CANDIDATES = 24
 const AVAILABILITY_BATCH_SIZE = 6
 const DISCOVERY_PAGE_COUNT = 2
@@ -177,6 +177,7 @@ interface CandidateMovie extends RecommendedMovie {
 interface RecommendationContext {
   movies: RecommendedMovie[]
   analysis: TasteAnalysis | null
+  excludedMovieKeys: string[]
 }
 
 function preferenceMode(preference: number): "indie" | "mixed" | "blockbusters" {
@@ -503,6 +504,20 @@ function buildRecommendationInput(options: {
     .join("\n")
 }
 
+function buildSelectedMoviesResponseText(selectedMovies: RecommendedMovie[], watchPreferences: WatchPreferences): string {
+  const viewingPreference = watchPreferencesSummary(watchPreferences)
+  const countLabel = selectedMovies.length === TARGET_RECOMMENDATION_COUNT ? "five" : String(selectedMovies.length)
+  const filterText = viewingPreference ? ` and match ${viewingPreference}` : ""
+
+  if (selectedMovies.length < TARGET_RECOMMENDATION_COUNT && watchPreferencesAreActive(watchPreferences)) {
+    return `I found ${countLabel} verified pick${
+      selectedMovies.length === 1 ? "" : "s"
+    } that fit the vibe${filterText}. The current watch filter is pretty narrow, so I’m only showing titles I could verify.`
+  }
+
+  return `I found ${countLabel} verified picks that fit the vibe${filterText}.`
+}
+
 function extractMovieTitlesFromMarkdown(text: string): string[] {
   const matches: string[] = []
   const patterns = [/\*\*(.*?)\*\*/g, /\*([^*\n]+)\*/g]
@@ -519,6 +534,38 @@ function extractMovieTitlesFromMarkdown(text: string): string[] {
   }
 
   return sanitizeMovieTitles(matches)
+}
+
+function extractSeedTitleHints(text: string): string[] {
+  const hints: string[] = []
+  const quotedPatterns = [/"([^"\n]{2,80})"/g, /“([^”\n]{2,80})”/g, /'([^'\n]{2,80})'/g]
+
+  for (const pattern of quotedPatterns) {
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(text)) !== null) {
+      hints.push(match[1])
+    }
+  }
+
+  const likePattern =
+    /(?:more\s+(?:films?|movies?)\s+like|something\s+like|similar\s+to|movies?\s+like|films?\s+like|like)\s+(.+?)(?:[.?!]|$)/gi
+  let likeMatch: RegExpExecArray | null
+  while ((likeMatch = likePattern.exec(text)) !== null) {
+    const rawCandidate = likeMatch[1].trim()
+    if (/\s+(?:films?|movies?|ones?|recommendations?)$/i.test(rawCandidate)) {
+      continue
+    }
+
+    const candidate = rawCandidate
+      .replace(/^(?:the\s+movie|the\s+film)\s+/i, "")
+      .trim()
+
+    if (candidate && !/\b(?:directors?|filmmakers?|actors?|writers?)$/i.test(candidate)) {
+      hints.push(candidate)
+    }
+  }
+
+  return sanitizeMovieTitles(hints)
 }
 
 function createSSEEvent(event: string, data: unknown): string {
@@ -555,6 +602,14 @@ function moviePosterUrl(path?: string | null): string | null {
 
 function normalizeTitleKey(title: string): string {
   return normalizeMovieTitle(title).toLowerCase()
+}
+
+function movieKeysFromTitles(titles: string[]): Set<string> {
+  return new Set(sanitizeMovieTitles(titles).map(normalizeTitleKey))
+}
+
+function movieIsExcluded(movie: RecommendedMovie, excludedKeys: Set<string>): boolean {
+  return excludedKeys.has(String(movie.tmdbId)) || excludedKeys.has(normalizeTitleKey(movie.title))
 }
 
 function tmdbUrl(path: string, params: Record<string, string | number | boolean> = {}): string | null {
@@ -708,7 +763,13 @@ function candidateFromListItem(
   const blockbusterScore = popularityScore
   const noveltyFit =
     preference <= 0.33 ? hiddenGemScore : preference >= 0.67 ? blockbusterScore : 1 - Math.abs(0.5 - popularityScore)
-  const sourceScore = sourceType === "recommendations" ? 0.2 : 0.12
+  const sourceScore = sourceType.startsWith("provider_discover")
+    ? 0.36
+    : sourceType === "now_playing"
+    ? 0.3
+    : sourceType === "recommendations"
+    ? 0.2
+    : 0.12
   const score = sourceScore + noveltyFit * 0.5 + Math.min(voteAverage / 10, 1) * 0.3
 
   return {
@@ -976,6 +1037,18 @@ function watchPreferenceScore(movie: RecommendedMovie, preferences: WatchPrefere
   return score
 }
 
+function sourceVerifiedWatchPreferenceScore(candidate: CandidateMovie, preferences: WatchPreferences): number {
+  if (preferences.mode === "home" && candidate.sourceTypes.some((sourceType) => sourceType.startsWith("provider_discover"))) {
+    return preferences.streamingProviders.length > 0 ? 0.45 : 0.3
+  }
+
+  if (preferences.mode === "theaters" && candidate.sourceTypes.includes("now_playing")) {
+    return 0.45
+  }
+
+  return 0
+}
+
 async function applyWatchPreferencesToCandidates(
   candidates: CandidateMovie[],
   preferences: WatchPreferences
@@ -984,13 +1057,26 @@ async function applyWatchPreferencesToCandidates(
     return candidates
   }
 
-  const candidatesWithAvailability = await enrichCandidateAvailability(candidates, preferences)
-  return candidatesWithAvailability
+  const sourceVerifiedCandidates = candidates
+    .filter((candidate) => sourceVerifiedWatchPreferenceScore(candidate, preferences) > 0)
+    .map((candidate) => ({
+      ...candidate,
+      score: candidate.score + sourceVerifiedWatchPreferenceScore(candidate, preferences),
+    }))
+  const candidatesNeedingAvailability = candidates.filter(
+    (candidate) => sourceVerifiedWatchPreferenceScore(candidate, preferences) === 0
+  )
+  const candidatesWithAvailability = await enrichCandidateAvailability(candidatesNeedingAvailability, preferences)
+
+  return [
+    ...sourceVerifiedCandidates,
+    ...candidatesWithAvailability
     .filter((candidate) => movieMatchesWatchPreferences(candidate, preferences))
     .map((candidate) => ({
       ...candidate,
       score: candidate.score + watchPreferenceScore(candidate, preferences),
-    }))
+    })),
+  ]
     .sort((first, second) => second.score - first.score)
 }
 
@@ -1299,7 +1385,10 @@ function pickSeedTitles(analysis: TasteAnalysis, feedbackEvents: FeedbackEvent[]
 
 function fallbackTasteAnalysis(userMessage: string): TasteAnalysis {
   return {
-    seedMovieTitles: sanitizeMovieTitles(extractMovieTitlesFromMarkdown(userMessage)),
+    seedMovieTitles: sanitizeMovieTitles([
+      ...extractMovieTitlesFromMarkdown(userMessage),
+      ...extractSeedTitleHints(userMessage),
+    ]),
     referencePeople: [],
     likedSignals: [],
     dislikedSignals: [],
@@ -1385,8 +1474,9 @@ async function analyzeUserTaste(options: {
     })
 
     const parsed = JSON.parse(response.output_text) as Partial<TasteAnalysis>
+    const seedTitleHints = extractSeedTitleHints(options.userMessage)
     return {
-      seedMovieTitles: sanitizeMovieTitles(parsed.seedMovieTitles),
+      seedMovieTitles: sanitizeMovieTitles([...sanitizeMovieTitles(parsed.seedMovieTitles), ...seedTitleHints]),
       referencePeople: Array.isArray(parsed.referencePeople)
         ? parsed.referencePeople
             .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -1524,11 +1614,20 @@ async function rerankCandidates(options: {
       }
     }
 
-    return selected.length > 0
-      ? selected
-      : options.candidates
-          .slice(0, TARGET_RECOMMENDATION_COUNT)
-          .map((candidate) => recommendationFromCandidate(candidate))
+    for (const candidate of options.candidates) {
+      if (selected.length === TARGET_RECOMMENDATION_COUNT) {
+        break
+      }
+
+      if (selectedIds.has(candidate.tmdbId)) {
+        continue
+      }
+
+      selectedIds.add(candidate.tmdbId)
+      selected.push(recommendationFromCandidate(candidate))
+    }
+
+    return selected
   } catch (error) {
     console.error("Failed to rerank film candidates:", error)
     return options.candidates
@@ -1550,9 +1649,17 @@ async function prepareRecommendationContext(options: {
     feedbackEvents: options.feedbackEvents,
   })
   const seedTitles = pickSeedTitles(analysis, options.feedbackEvents)
+  const excludedMovieKeys = movieKeysFromTitles(seedTitles)
+
+  for (const event of options.feedbackEvents) {
+    if (event.tmdbId) {
+      excludedMovieKeys.add(String(event.tmdbId))
+    }
+    excludedMovieKeys.add(normalizeTitleKey(event.title))
+  }
 
   if (!TMDB_API_KEY) {
-    return { movies: [], analysis }
+    return { movies: [], analysis, excludedMovieKeys: [...excludedMovieKeys] }
   }
 
   const [seedMovieResults, referenceMovies, watchPreferenceCandidates] = await Promise.all([
@@ -1561,6 +1668,11 @@ async function prepareRecommendationContext(options: {
     fetchWatchPreferenceDiscoveryCandidates(options.watchPreferences, options.preference),
   ])
   const seedMovies = seedMovieResults.filter((movie): movie is RecommendedMovie => movie !== null)
+  for (const seedMovie of seedMovies) {
+    excludedMovieKeys.add(String(seedMovie.tmdbId))
+    excludedMovieKeys.add(normalizeTitleKey(seedMovie.title))
+  }
+
   const retrievalSeedMovies = dedupeMoviesById([...seedMovies, ...referenceMovies])
   const directReferenceCandidates = analysis.excludeDirectReferenceWorks ? [] : referenceMovies
 
@@ -1579,7 +1691,7 @@ async function prepareRecommendationContext(options: {
   const candidates = await applyWatchPreferencesToCandidates(rankedCandidates, options.watchPreferences)
 
   if (candidates.length === 0) {
-    return { movies: [], analysis }
+    return { movies: [], analysis, excludedMovieKeys: [...excludedMovieKeys] }
   }
 
   const movies = await rerankCandidates({
@@ -1591,22 +1703,29 @@ async function prepareRecommendationContext(options: {
     watchPreferences: options.watchPreferences,
   })
 
-  return { movies: await enrichAvailability(movies), analysis }
+  return {
+    movies: (await enrichAvailability(movies)).filter((movie) => !movieIsExcluded(movie, excludedMovieKeys)),
+    analysis,
+    excludedMovieKeys: [...excludedMovieKeys],
+  }
 }
 
-async function enrichMovieTitles(titles: string[], watchPreferences: WatchPreferences): Promise<RecommendedMovie[]> {
+async function enrichMovieTitles(
+  titles: string[],
+  watchPreferences: WatchPreferences,
+  excludedMovieKeys: Set<string> = new Set()
+): Promise<RecommendedMovie[]> {
   if (!TMDB_API_KEY || titles.length === 0) {
     return []
   }
 
-  const resolvedMovies = await Promise.all(
-    titles.slice(0, TARGET_RECOMMENDATION_COUNT + 1).map((title) => resolveMovieTitle(title))
-  )
+  const filteredTitles = sanitizeMovieTitles(titles).filter((title) => !excludedMovieKeys.has(normalizeTitleKey(title)))
+  const resolvedMovies = await Promise.all(filteredTitles.slice(0, 12).map((title) => resolveMovieTitle(title)))
   const resolvedIds = new Set<number>()
   const movies: RecommendedMovie[] = []
 
   for (const movie of resolvedMovies) {
-    if (!movie || resolvedIds.has(movie.tmdbId)) {
+    if (!movie || resolvedIds.has(movie.tmdbId) || movieIsExcluded(movie, excludedMovieKeys)) {
       continue
     }
 
@@ -1769,7 +1888,7 @@ export async function POST(req: Request) {
       sendEvent("status", { status: "finding" })
 
       try {
-        let recommendationContext: RecommendationContext = { movies: [], analysis: null }
+        let recommendationContext: RecommendationContext = { movies: [], analysis: null, excludedMovieKeys: [] }
 
         try {
           recommendationContext = await prepareRecommendationContext({
@@ -1783,28 +1902,43 @@ export async function POST(req: Request) {
           console.error("Failed to prepare recommendation context:", error)
         }
 
-        const { responseText, responseId } = await streamAssistantResponse({
-          userMessage,
-          preference,
-          previousResponseId,
-          conversationHistory,
-          selectedMovies: recommendationContext.movies,
-          analysis: recommendationContext.analysis,
-          watchPreferences,
-          onToken: (delta) => {
-            sendEvent("token", { delta })
-          },
-        })
+        let responseText = ""
+        let responseId: string | null = null
+        const excludedMovieKeys = new Set(recommendationContext.excludedMovieKeys)
 
-        const extractedMovieTitles = await extractMovieTitlesFromText(responseText)
+        if (recommendationContext.movies.length > 0) {
+          responseText = buildSelectedMoviesResponseText(recommendationContext.movies, watchPreferences)
+          sendEvent("token", { delta: responseText })
+        } else {
+          const assistantResponse = await streamAssistantResponse({
+            userMessage,
+            preference,
+            previousResponseId,
+            conversationHistory,
+            selectedMovies: recommendationContext.movies,
+            analysis: recommendationContext.analysis,
+            watchPreferences,
+            onToken: (delta) => {
+              sendEvent("token", { delta })
+            },
+          })
+
+          responseText = assistantResponse.responseText
+          responseId = assistantResponse.responseId
+        }
+
+        const extractedMovieTitles =
+          recommendationContext.movies.length > 0 ? [] : await extractMovieTitlesFromText(responseText)
         const enrichedFallbackMovies =
-          recommendationContext.movies.length > 0 ? [] : await enrichMovieTitles(extractedMovieTitles, watchPreferences)
+          recommendationContext.movies.length > 0
+            ? []
+            : await enrichMovieTitles(extractedMovieTitles, watchPreferences, excludedMovieKeys)
         const metadataMovies =
           recommendationContext.movies.length > 0 ? recommendationContext.movies : enrichedFallbackMovies
         const movieTitles = sanitizeMovieTitles([
           ...metadataMovies.map((movie) => movie.title),
-          ...extractedMovieTitles,
-        ])
+          ...extractedMovieTitles.filter((title) => !excludedMovieKeys.has(normalizeTitleKey(title))),
+        ]).slice(0, TARGET_RECOMMENDATION_COUNT)
 
         sendEvent("metadata", {
           responseId,
