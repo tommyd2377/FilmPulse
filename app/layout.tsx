@@ -1,5 +1,6 @@
 import type React from "react"
 import "./globals.css"
+import "streamdown/styles.css"
 import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 
@@ -28,7 +29,3 @@ export default function RootLayout({
     </html>
   )
 }
-
-
-
-import './globals.css'

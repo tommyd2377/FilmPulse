@@ -97,3 +97,24 @@
   background: #db2777;
   cursor: pointer;
 }
+
+.filmpulse-chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.filmpulse-chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.filmpulse-chat-markdown p {
+  margin: 0.35rem 0;
+}
+
+.filmpulse-chat-markdown strong {
+  display: inline-block;
+  font-weight: 600;
+  color: transparent;
+  background: linear-gradient(to right, #c084fc, #db2777);
+  background-clip: text;
+  -webkit-background-clip: text;
+}

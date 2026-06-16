@@ -8,6 +8,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faTwitter, faTelegram, faLinkedin, faGithub } from '@fortawesome/free-brands-svg-icons'
 import { Globe, Heart, Loader2, Mic, MicOff, Play, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
+import { Streamdown } from "streamdown"
 
 interface MovieAvailability {
   region: string
@@ -38,6 +39,7 @@ interface Message {
   content: string
   isBot: boolean
   movies?: RecommendedMovie[]
+  followUpContent?: string
   isLoadingMovies?: boolean
   status?: "finding" | "streaming" | "complete" | "error"
 }
@@ -143,6 +145,19 @@ interface TmdbWatchProviderRegion {
 
 interface TmdbWatchProviderResponse {
   results?: Record<string, TmdbWatchProviderRegion | undefined>
+}
+
+function ChatMarkdown({ content, isAnimating }: { content: string; isAnimating: boolean }) {
+  return (
+    <Streamdown
+      animated
+      caret={isAnimating ? "block" : undefined}
+      className="filmpulse-chat-markdown leading-relaxed"
+      isAnimating={isAnimating}
+    >
+      {content}
+    </Streamdown>
+  )
 }
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
@@ -562,12 +577,14 @@ function applyWatchPreferencesToMovies(
 
 function MovieRecommendationCard({
   movie,
+  index = 0,
   feedbackState,
   isLoading,
   onMoreLikeThis,
   onFeedback,
 }: {
   movie: RecommendedMovie
+  index?: number
   feedbackState: FeedbackType | null
   isLoading: boolean
   onMoreLikeThis: (movie: RecommendedMovie) => void
@@ -583,9 +600,9 @@ function MovieRecommendationCard({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22 }}
+      initial={{ opacity: 0, x: -120, scale: 0.985 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      transition={{ delay: index * 1, duration: 1, ease: [0.16, 1, 0.3, 1] }}
       className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 rounded-2xl border border-gray-600/70 bg-gray-900/35 p-3 text-left shadow-lg shadow-black/10 sm:flex sm:gap-4 sm:rounded-lg sm:shadow-none"
     >
       {movie.poster ? (
@@ -871,6 +888,9 @@ export default function FilmPulse() {
   const [selectedStreamingProviders, setSelectedStreamingProviders] = useState<string[]>([])
   const [includeRentals, setIncludeRentals] = useState(false)
   const [feedbackEvents, setFeedbackEvents] = useState<FeedbackEvent[]>([])
+  const [pendingScrollRequest, setPendingScrollRequest] = useState<{ messageId: string; alignPage: boolean } | null>(
+    null
+  )
   const feedbackEventsRef = useRef<FeedbackEvent[]>([])
   const inputRef = useRef<HTMLInputElement | null>(null)
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
@@ -884,6 +904,7 @@ export default function FilmPulse() {
   const nativeStartedAtRef = useRef(0)
   const dictationModeRef = useRef<DictationMode>("idle")
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const chatPanelRef = useRef<HTMLDivElement | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   useEffect(() => {
@@ -975,13 +996,21 @@ export default function FilmPulse() {
     delete messageRefs.current[messageId]
   }
 
-  const smoothScrollToMessageTop = (messageId: string, offset = 8) => {
+  const smoothScrollToMessageTop = (messageId: string, offset = 8, alignPage = false) => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const container = chatScrollRef.current
         const messageElement = messageRefs.current[messageId]
 
         if (!container || !messageElement) {
+          return
+        }
+
+        if (alignPage) {
+          messageElement.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
           return
         }
 
@@ -997,21 +1026,24 @@ export default function FilmPulse() {
     })
   }
 
-  const smoothScrollToBottom = () => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const container = chatScrollRef.current
-        if (!container) {
-          return
-        }
+  useEffect(() => {
+    if (!pendingScrollRequest) {
+      return
+    }
 
-        container.scrollTo({
-          top: container.scrollHeight,
+    const timeoutId = window.setTimeout(() => {
+      if (pendingScrollRequest.alignPage) {
+        chatPanelRef.current?.scrollIntoView({
           behavior: "smooth",
+          block: "start",
         })
-      })
-    })
-  }
+      }
+      smoothScrollToMessageTop(pendingScrollRequest.messageId, 12, !pendingScrollRequest.alignPage)
+      setPendingScrollRequest(null)
+    }, 50)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [pendingScrollRequest])
 
   const setDictationMode = (nextMode: DictationMode) => {
     dictationModeRef.current = nextMode
@@ -1372,10 +1404,12 @@ export default function FilmPulse() {
 
     const userMessageId = createMessageId("user")
     const botMessageId = createMessageId("bot")
+    const hasPreviousUserMessage = messages.some((message) => !message.isBot)
 
     let streamedResponseText = ""
     let metadataMovieTitles: string[] = []
     let metadataMovies: RecommendedMovie[] = []
+    let metadataMoviesAttached = false
     let streamErrored = false
     const conversationHistory = messages
       .filter((message) => message.content.trim().length > 0)
@@ -1392,7 +1426,10 @@ export default function FilmPulse() {
       { id: userMessageId, content: userMessage, isBot: false, movies: [] },
       { id: botMessageId, content: "", isBot: true, movies: [], isLoadingMovies: true, status: "finding" },
     ])
-    smoothScrollToMessageTop(userMessageId, 12)
+    setPendingScrollRequest({
+      messageId: botMessageId,
+      alignPage: !hasPreviousUserMessage,
+    })
 
     try {
       const response = await fetch("/api/getRecommendation", {
@@ -1457,6 +1494,22 @@ export default function FilmPulse() {
           return
         }
 
+        if (eventName === "followUpToken") {
+          const delta =
+            typeof parsedData === "object" && parsedData !== null && "delta" in parsedData
+              ? (parsedData as { delta?: unknown }).delta
+              : undefined
+
+          if (typeof delta === "string" && delta.length > 0) {
+            updateMessageById(botMessageId, (message) => ({
+              ...message,
+              followUpContent: `${message.followUpContent ?? ""}${delta}`,
+              status: "streaming",
+            }))
+          }
+          return
+        }
+
         if (eventName === "metadata") {
           if (typeof parsedData === "object" && parsedData !== null) {
             const metadata = parsedData as { responseId?: unknown; movieTitles?: unknown; movies?: unknown }
@@ -1476,6 +1529,15 @@ export default function FilmPulse() {
             }
 
             metadataMovies = sanitizeRecommendedMovies(metadata.movies)
+            if (metadataMovies.length > 0) {
+              metadataMoviesAttached = true
+              updateMessageById(botMessageId, (currentMessage) => ({
+                ...currentMessage,
+                movies: metadataMovies,
+                isLoadingMovies: false,
+                status: "streaming",
+              }))
+            }
           }
           return
         }
@@ -1544,16 +1606,23 @@ export default function FilmPulse() {
           metadataMovieTitles.length > 0
             ? metadataMovieTitles
             : sanitizeMovieTitles(extractMovieTitles(streamedResponseText))
-        const moviesWithPosters =
-          metadataMovies.length > 0 ? metadataMovies : await fetchMoviesWithPosters(movieTitles)
+        if (!metadataMoviesAttached) {
+          const moviesWithPosters =
+            metadataMovies.length > 0 ? metadataMovies : await fetchMoviesWithPosters(movieTitles)
 
-        updateMessageById(botMessageId, (currentMessage) => ({
-          ...currentMessage,
-          movies: moviesWithPosters,
-          isLoadingMovies: false,
-          status: "complete",
-        }))
-        smoothScrollToBottom()
+          updateMessageById(botMessageId, (currentMessage) => ({
+            ...currentMessage,
+            movies: moviesWithPosters,
+            isLoadingMovies: false,
+            status: "complete",
+          }))
+        } else {
+          updateMessageById(botMessageId, (currentMessage) => ({
+            ...currentMessage,
+            isLoadingMovies: false,
+            status: "complete",
+          }))
+        }
       }
     } catch (error) {
       const message = error instanceof Error && error.message.trim()
@@ -1596,117 +1665,146 @@ export default function FilmPulse() {
   const isTranscribingDictation = dictationMode === "transcribing"
   const dictationLabel = dictationButtonLabel(dictationMode, dictationSupported)
   const dictationTitle = dictationStatus === DICTATION_OFF_STATUS ? dictationLabel : dictationStatus
+  const hasStartedConversation = messages.some((message) => !message.isBot)
+  const latestAssistantMessageId =
+    [...messages].reverse().find((message) => message.isBot && message.id !== "welcome")?.id ?? null
+  const visibleMessages = hasStartedConversation
+    ? messages.filter((message) => message.id !== "welcome")
+    : messages
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white py-8">
-      <div className="max-w-4xl mx-auto p-4">
-        <header className="text-center mb-8">
-          <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-4">
-            FilmPulse
-          </h1>
-          <p className="text-lg text-gray-300">
-            Discover hidden gems and international cinema with AI-powered recommendations
-          </p>
-        </header>
+    <div
+      className={`min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white ${
+        hasStartedConversation ? "py-3 sm:py-4" : "py-8"
+      }`}
+    >
+      <div
+        className={`mx-auto w-full ${
+          hasStartedConversation
+            ? "flex min-h-[calc(100vh-2rem)] max-w-5xl flex-col px-3 sm:px-4"
+            : "max-w-4xl p-4"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <header className="text-center mb-8">
+            <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-4">
+              FilmPulse
+            </h1>
+            <p className="text-lg text-gray-300">
+              Discover hidden gems and international cinema with AI-powered recommendations
+            </p>
+          </header>
 
-        <div className="flex flex-col items-center mb-6">
-          <p className="text-gray-300 text-sm mb-2">
-            Film Preference: {preference === 0 ? "Indie/Hidden Gems" : preference === 1 ? "Blockbusters" : "Mixed"}
-          </p>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.1"
-            value={preference}
-            onChange={(e) => setPreference(parseFloat(e.target.value))}
-            className="filmpulse-slider w-3/4 cursor-pointer"
-          />
-          <div className="flex justify-between w-3/4 text-gray-400 text-xs mt-1">
-            <span>Indie/Hidden Gems</span>
-            <span>Blockbusters</span>
-          </div>
-        </div>
-
-        <div className="mb-6 space-y-3 rounded-lg border border-gray-700 bg-gray-800/60 p-3">
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              className={watchModeButtonClass("any")}
-              onClick={() => handleWatchModeChange("any")}
-              aria-pressed={watchMode === "any"}
-            >
-              <Sparkles className="h-4 w-4" />
-              Any
-            </button>
-            <button
-              type="button"
-              className={watchModeButtonClass("theaters")}
-              onClick={() => handleWatchModeChange("theaters")}
-              aria-pressed={watchMode === "theaters"}
-            >
-              <Ticket className="h-4 w-4" />
-              Theaters
-            </button>
-            <button
-              type="button"
-              className={watchModeButtonClass("home")}
-              onClick={() => handleWatchModeChange("home")}
-              aria-pressed={watchMode === "home"}
-            >
-              <Play className="h-4 w-4" />
-              At home
-            </button>
-          </div>
-
-          {watchMode === "home" ? (
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                {WATCH_PROVIDER_OPTIONS.map((provider) => {
-                  const selected = selectedStreamingProviders.includes(provider.value)
-
-                  return (
-                    <button
-                      key={provider.value}
-                      type="button"
-                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                        selected
-                          ? "border-purple-300/70 bg-purple-500/25 text-white"
-                          : "border-gray-600 bg-gray-900/50 text-gray-300 hover:bg-gray-700"
-                      }`}
-                      onClick={() => toggleStreamingProvider(provider.value)}
-                      aria-pressed={selected}
-                    >
-                      {provider.label}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <label className="inline-flex items-center gap-2 rounded-full border border-gray-600 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
-                <input
-                  type="checkbox"
-                  checked={includeRentals}
-                  onChange={(event) => setIncludeRentals(event.target.checked)}
-                  className="h-4 w-4 rounded border-gray-500 bg-gray-800 accent-pink-500"
-                />
-                Open to rentals
-              </label>
+          <div className="flex flex-col items-center mb-6">
+            <p className="text-gray-300 text-sm mb-2">
+              Film Preference
+            </p>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={preference}
+              onChange={(e) => setPreference(parseFloat(e.target.value))}
+              className="filmpulse-slider w-3/4 cursor-pointer"
+            />
+            <div className="flex justify-between w-3/4 text-gray-400 text-xs mt-1">
+              <span>Indie/Hidden Gems</span>
+              <span>Popular</span>
             </div>
-          ) : null}
+          </div>
+
+          <div className="mb-6 space-y-3 rounded-lg border border-gray-700 bg-gray-800/60 p-3">
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                className={watchModeButtonClass("any")}
+                onClick={() => handleWatchModeChange("any")}
+                aria-pressed={watchMode === "any"}
+              >
+                <Sparkles className="h-4 w-4" />
+                Any
+              </button>
+              <button
+                type="button"
+                className={watchModeButtonClass("theaters")}
+                onClick={() => handleWatchModeChange("theaters")}
+                aria-pressed={watchMode === "theaters"}
+              >
+                <Ticket className="h-4 w-4" />
+                Theaters
+              </button>
+              <button
+                type="button"
+                className={watchModeButtonClass("home")}
+                onClick={() => handleWatchModeChange("home")}
+                aria-pressed={watchMode === "home"}
+              >
+                <Play className="h-4 w-4" />
+                At home
+              </button>
+            </div>
+
+            {watchMode === "home" ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {WATCH_PROVIDER_OPTIONS.map((provider) => {
+                    const selected = selectedStreamingProviders.includes(provider.value)
+
+                    return (
+                      <button
+                        key={provider.value}
+                        type="button"
+                        className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          selected
+                            ? "border-purple-300/70 bg-purple-500/25 text-white"
+                            : "border-gray-600 bg-gray-900/50 text-gray-300 hover:bg-gray-700"
+                        }`}
+                        onClick={() => toggleStreamingProvider(provider.value)}
+                        aria-pressed={selected}
+                      >
+                        {provider.label}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <label className="inline-flex items-center gap-2 rounded-full border border-gray-600 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
+                  <input
+                    type="checkbox"
+                    checked={includeRentals}
+                    onChange={(event) => setIncludeRentals(event.target.checked)}
+                    className="h-4 w-4 rounded border-gray-500 bg-gray-800 accent-pink-500"
+                  />
+                  Open to rentals
+                </label>
+              </div>
+            ) : null}
+          </div>
         </div>
 
-        <Card className="bg-gray-800 border-gray-700 shadow-xl">
-          <CardContent className="p-3 sm:p-6">
+        <Card
+          ref={chatPanelRef}
+          className={`bg-gray-800 border-gray-700 shadow-xl ${
+            hasStartedConversation ? "flex min-h-[calc(100vh-5.5rem)] flex-1" : ""
+          }`}
+        >
+          <CardContent className={`p-3 sm:p-6 ${hasStartedConversation ? "flex min-h-0 flex-1 flex-col" : ""}`}>
             <div
               ref={chatScrollRef}
-              className="space-y-4 mb-4 max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800"
+              className={`space-y-4 mb-4 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800 ${
+                hasStartedConversation ? "min-h-0 flex-1 pr-1 sm:pr-2" : "max-h-[60vh]"
+              }`}
             >
               <AnimatePresence>
-                {messages.map((msg) => {
+                {visibleMessages.map((msg) => {
                   const hasRecommendationArea =
                     msg.isBot && (msg.isLoadingMovies || Boolean(msg.movies && msg.movies.length > 0))
                   const isFinding = msg.status === "finding" && !msg.content.trim()
+                  const isLatestAssistantStreaming = msg.id === latestAssistantMessageId && msg.status === "streaming"
+                  const hasFollowUp = Boolean(msg.followUpContent?.trim())
+                  const isIntroAnimating = isLatestAssistantStreaming && !hasFollowUp
+                  const isFollowUpAnimating = isLatestAssistantStreaming && hasFollowUp
 
                   return (
                     <motion.div
@@ -1719,7 +1817,13 @@ export default function FilmPulse() {
                       className={`flex ${msg.isBot ? "justify-start" : "justify-end"}`}
                     >
                     <div
-                      className={`${msg.isBot ? "w-full max-w-full sm:max-w-[86%]" : "max-w-[88%] sm:max-w-[80%]"} p-2.5 rounded-lg sm:p-3 ${
+                      className={`${
+                        msg.isBot
+                          ? hasStartedConversation
+                            ? "w-full max-w-full"
+                            : "w-full max-w-full sm:max-w-[86%]"
+                          : "max-w-[88%] sm:max-w-[80%]"
+                      } p-2.5 rounded-lg sm:p-3 ${
                         msg.isBot
                           ? "bg-gray-700 text-white"
                           : "bg-gradient-to-r from-purple-400 to-pink-600 text-white"
@@ -1731,15 +1835,7 @@ export default function FilmPulse() {
                           <span>Finding films...</span>
                         </div>
                       ) : msg.content.trim() ? (
-                        <div
-                          className="leading-relaxed"
-                          dangerouslySetInnerHTML={{
-                            __html: msg.content.replace(
-                              /\*\*(.*?)\*\*/g,
-                              "<strong class='inline-block font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600'>$1</strong>"
-                            ),
-                          }}
-                        />
+                        <ChatMarkdown content={msg.content} isAnimating={isIntroAnimating} />
                       ) : null}
 
                       {hasRecommendationArea && (
@@ -1756,10 +1852,11 @@ export default function FilmPulse() {
                           <AnimatePresence mode="popLayout">
                             {msg.isLoadingMovies
                               ? [0, 1, 2].map((item) => <MovieCardSkeleton key={`skeleton-${msg.id}-${item}`} />)
-                              : msg.movies?.map((movie) => (
+                              : msg.movies?.map((movie, movieIndex) => (
                                   <MovieRecommendationCard
                                     key={movie.tmdbId ?? `${msg.id}-${movie.title}`}
                                     movie={movie}
+                                    index={movieIndex}
                                     feedbackState={getMovieFeedbackState(movie)}
                                     isLoading={isLoading}
                                     onMoreLikeThis={handleShowMoreLikeThis}
@@ -1769,6 +1866,12 @@ export default function FilmPulse() {
                           </AnimatePresence>
                         </div>
                       )}
+
+                      {hasFollowUp ? (
+                        <div className="mt-4 border-t border-gray-600/60 pt-3">
+                          <ChatMarkdown content={msg.followUpContent ?? ""} isAnimating={isFollowUpAnimating} />
+                        </div>
+                      ) : null}
                     </div>
                     </motion.div>
                   )
