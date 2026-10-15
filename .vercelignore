@@ -1,0 +1,8 @@
+.env
+.env.*
+*.tsbuildinfo
+logs/
+*.log
+coverage/
+build/
+out/
