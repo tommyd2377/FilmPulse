@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faTwitter, faTelegram, faLinkedin, faGithub } from '@fortawesome/free-brands-svg-icons'
-import { Globe, Heart, Loader2, Mic, MicOff, Play, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
+import { Check, Globe, Heart, Loader2, Mic, MicOff, Play, RotateCcw, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Streamdown } from "streamdown"
 
@@ -27,6 +27,8 @@ interface RecommendedMovie {
   tmdbUrl: string | null
   releaseYear: number | string
   genre: string
+  runtime?: number | null
+  originalLanguage?: string | null
   overview?: string
   popularity?: number
   voteAverage?: number
@@ -40,8 +42,23 @@ interface Message {
   isBot: boolean
   movies?: RecommendedMovie[]
   followUpContent?: string
+  notice?: string
   isLoadingMovies?: boolean
   status?: "finding" | "streaming" | "complete" | "error"
+  intent?: ResponseIntent
+  progress?: RequestProgress
+  requestStartedAt?: number
+  requestText?: string
+  requestPreviousResponseId?: string | null
+}
+
+type RequestStage = "understanding" | "curating" | "verifying" | "complete"
+
+interface RequestProgress {
+  stage?: RequestStage
+  brief?: string
+  constraints: string[]
+  completedStages: RequestStage[]
 }
 
 interface SSEEvent {
@@ -51,11 +68,13 @@ interface SSEEvent {
 
 type FeedbackType = "liked" | "loved_this" | "more_like_this" | "not_interested"
 type WatchMode = "any" | "theaters" | "home"
+type ResponseIntent = "recommendation" | "conversation" | "clarification"
 
 interface FeedbackEvent {
   type: FeedbackType
   title: string
   tmdbId: number | null
+  year?: number | null
 }
 
 interface WatchPreferences {
@@ -124,6 +143,8 @@ interface TmdbMovieListItem {
 
 interface TmdbMovieDetails {
   genres?: Array<{ name?: string }>
+  runtime?: number | null
+  original_language?: string | null
   overview?: string
   popularity?: number
   vote_average?: number
@@ -147,6 +168,63 @@ interface TmdbWatchProviderResponse {
   results?: Record<string, TmdbWatchProviderRegion | undefined>
 }
 
+const REQUEST_STAGE_LABELS: Record<RequestStage, string> = {
+  understanding: "Understanding your brief",
+  curating: "Curating your answer",
+  verifying: "Verifying film details",
+  complete: "Ready",
+}
+const REQUEST_COMPLETED_LABELS: Record<RequestStage, string> = {
+  understanding: "Brief understood",
+  curating: "Curation complete",
+  verifying: "Details verified",
+  complete: "Ready",
+}
+
+function isRequestStage(value: unknown): value is RequestStage {
+  return value === "understanding" || value === "curating" || value === "verifying" || value === "complete"
+}
+
+function RequestProgressPanel({ progress, elapsedSeconds }: { progress?: RequestProgress; elapsedSeconds: number }) {
+  return (
+    <div className="mb-4 overflow-hidden rounded-xl border border-purple-300/20 bg-gradient-to-br from-purple-400/10 to-gray-900/20 p-3.5 sm:p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-purple-300/20 bg-purple-300/10">
+            <Sparkles className="h-4 w-4 text-purple-200 motion-safe:animate-pulse" aria-hidden="true" />
+          </span>
+          <p role="status" aria-live="polite" className="text-sm font-medium text-purple-100">
+            {progress?.stage ? REQUEST_STAGE_LABELS[progress.stage] : "Connecting to FilmPulse"}
+          </p>
+        </div>
+        <span role="timer" aria-live="off" className="shrink-0 text-xs tabular-nums text-gray-400">
+          {elapsedSeconds}s elapsed
+        </span>
+      </div>
+      {progress?.brief ? <p className="mt-3 text-sm leading-relaxed text-gray-200">{progress.brief}</p> : null}
+      {progress?.constraints.length ? (
+        <div className="mt-2.5 flex flex-wrap gap-1.5" aria-label="Your preferences">
+          {progress.constraints.map((constraint) => (
+            <span key={constraint} className="rounded-full border border-gray-500/50 bg-gray-900/20 px-2.5 py-1 text-[11px] text-gray-300">
+              {constraint}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {progress?.completedStages.some((stage) => stage !== "complete") ? (
+        <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 border-t border-purple-200/10 pt-2.5 text-[11px] text-gray-400" aria-label="Completed steps">
+          {progress.completedStages.filter((stage) => stage !== "complete").map((stage) => (
+            <li key={stage} className="inline-flex items-center gap-1.5">
+              <Check className="h-3 w-3 text-emerald-300" aria-hidden="true" />
+              {REQUEST_COMPLETED_LABELS[stage]}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
 function ChatMarkdown({ content, isAnimating }: { content: string; isAnimating: boolean }) {
   return (
     <Streamdown
@@ -164,6 +242,11 @@ const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY
 const TMDB_REGION = (process.env.NEXT_PUBLIC_TMDB_REGION ?? "US").trim().toUpperCase() || "US"
 const TMDB_BASE_URL = "https://api.themoviedb.org/3"
 const DICTATION_OFF_STATUS = "Dictation is off."
+const WELCOME_MESSAGE: Message = {
+  id: "welcome",
+  content: "Hi! I'm your film recommendation assistant. Tell me some movies you like, and I'll suggest similar ones!",
+  isBot: true,
+}
 const NATIVE_SPEECH_FALLBACK_ERRORS = new Set(["network", "service-not-allowed"])
 const WATCH_PROVIDER_OPTIONS: WatchProviderOption[] = [
   { label: "Netflix", value: "Netflix" },
@@ -326,12 +409,15 @@ function MovieCardSkeleton() {
   )
 }
 
-function sanitizeStringArray(value: unknown): string[] {
+function sanitizeStringArray(value: unknown, limit = 4): string[] {
   if (!Array.isArray(value)) {
     return []
   }
 
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 4)
+  return value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim().slice(0, 120))
+    .slice(0, limit)
 }
 
 function sanitizeAvailability(value: unknown): MovieAvailability | undefined {
@@ -344,11 +430,33 @@ function sanitizeAvailability(value: unknown): MovieAvailability | undefined {
     region: typeof availability.region === "string" && availability.region.trim() ? availability.region : "US",
     watchUrl: typeof availability.watchUrl === "string" && availability.watchUrl.trim() ? availability.watchUrl : null,
     inTheaters: availability.inTheaters === true,
-    streaming: sanitizeStringArray(availability.streaming),
-    rent: sanitizeStringArray(availability.rent),
-    buy: sanitizeStringArray(availability.buy),
+    streaming: sanitizeStringArray(availability.streaming, 20),
+    rent: sanitizeStringArray(availability.rent, 20),
+    buy: sanitizeStringArray(availability.buy, 20),
     badges: sanitizeStringArray(availability.badges),
   }
+}
+
+function displayName(value: string | null | undefined, type: "language" | "region"): string | null {
+  if (!value?.trim()) {
+    return null
+  }
+
+  try {
+    const name = new Intl.DisplayNames(["en"], { type }).of(value.trim())
+    return name && name.toLowerCase() !== value.trim().toLowerCase() ? name : null
+  } catch {
+    return null
+  }
+}
+
+function sanitizeRuntime(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : null
+}
+
+function movieReleaseYear(movie: RecommendedMovie): number | null {
+  const year = String(movie.releaseYear).trim()
+  return /^\d{4}$/.test(year) ? Number(year) : null
 }
 
 function availabilityBadgeClass(label: string): string {
@@ -518,8 +626,29 @@ async function fetchMovieAvailability(movie: RecommendedMovie): Promise<MovieAva
 function normalizeProviderName(provider: string): string {
   return provider
     .toLowerCase()
+    .replace(/\+/g, " plus ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
+}
+
+function providerNameMatches(availableProvider: string, selectedProvider: string): boolean {
+  const family = (provider: string): string => {
+    const key = normalizeProviderName(provider)
+    if (/^(?:hbo max|max)(?:$| )/.test(key)) return "max"
+    if (key === "amazon" || /^(?:amazon prime video|prime video)(?:$| )/.test(key)) return "prime"
+    if (key === "disney" || /^disney plus(?:$| )/.test(key)) return "disney"
+    if (/^apple tv(?:$| )/.test(key)) return "apple"
+    if (key === "paramount" || /^paramount plus(?:$| )/.test(key)) return "paramount"
+    if (/^peacock(?:$| )/.test(key)) return "peacock"
+    if (/^netflix(?:$| )/.test(key)) return "netflix"
+    if (/^hulu(?:$| )/.test(key)) return "hulu"
+    if (/^mubi(?:$| )/.test(key)) return "mubi"
+    if (/^criterion channel(?:$| )/.test(key)) return "criterion"
+    return key
+  }
+  const available = family(availableProvider)
+  const selected = family(selectedProvider)
+  return Boolean(available && selected && available === selected)
 }
 
 function hasSelectedStreamingProvider(availability: MovieAvailability, selectedProviders: string[]): boolean {
@@ -527,16 +656,8 @@ function hasSelectedStreamingProvider(availability: MovieAvailability, selectedP
     return availability.streaming.length > 0
   }
 
-  const availableProviders = availability.streaming.map(normalizeProviderName)
-  const selectedProviderKeys = selectedProviders.map(normalizeProviderName)
-
-  return selectedProviderKeys.some((selectedProvider) =>
-    availableProviders.some(
-      (availableProvider) =>
-        availableProvider === selectedProvider ||
-        availableProvider.includes(selectedProvider) ||
-        selectedProvider.includes(availableProvider)
-    )
+  return selectedProviders.some((selectedProvider) =>
+    availability.streaming.some((availableProvider) => providerNameMatches(availableProvider, selectedProvider))
   )
 }
 
@@ -582,6 +703,7 @@ function MovieRecommendationCard({
   isLoading,
   onMoreLikeThis,
   onFeedback,
+  watchPreferences,
 }: {
   movie: RecommendedMovie
   index?: number
@@ -589,20 +711,32 @@ function MovieRecommendationCard({
   isLoading: boolean
   onMoreLikeThis: (movie: RecommendedMovie) => void
   onFeedback: (movie: RecommendedMovie, type: FeedbackType) => void
+  watchPreferences: WatchPreferences
 }) {
   const likedSelected = feedbackState === "liked"
   const lovedSelected = feedbackState === "loved_this"
   const notInterestedSelected = feedbackState === "not_interested"
   const availability = movie.availability
-  const badges = availability?.badges && availability.badges.length > 0 ? availability.badges : ["Availability unknown"]
+  const preferredStreamingProvider = availability && watchPreferences.mode === "home"
+    ? availability.streaming.find((provider) =>
+        hasSelectedStreamingProvider({ ...availability, streaming: [provider] }, watchPreferences.streamingProviders)
+      )
+    : undefined
+  const badges = (availability?.badges && availability.badges.length > 0 ? availability.badges : ["Availability unknown"])
+    .filter((badge) => watchPreferences.mode !== "home" || watchPreferences.includeRentals || !/^(Rent|Buy):/.test(badge))
+    .map((badge) => preferredStreamingProvider && badge.startsWith("Stream:") ? `Stream: ${preferredStreamingProvider}` : badge)
   const watchUrl = availability?.watchUrl ?? buildWatchSearchUrl(movie)
   const watchLabel = availability?.inTheaters ? "Watch options" : "Where to watch"
+  const filmDetails = [
+    movie.runtime ? `${movie.runtime} min` : null,
+    displayName(movie.originalLanguage, "language"),
+  ].filter(Boolean).join(" · ")
 
   return (
     <motion.div
       initial={{ opacity: 0, x: -120, scale: 0.985 }}
       animate={{ opacity: 1, x: 0, scale: 1 }}
-      transition={{ delay: index * 1, duration: 1, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ delay: index * 0.08, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
       className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 rounded-2xl border border-gray-600/70 bg-gray-900/35 p-3 text-left shadow-lg shadow-black/10 sm:flex sm:gap-4 sm:rounded-lg sm:shadow-none"
     >
       {movie.poster ? (
@@ -629,6 +763,8 @@ function MovieRecommendationCard({
             </span>
           </div>
 
+          {filmDetails ? <p className="mt-1 text-xs text-gray-400">{filmDetails}</p> : null}
+
           <div className="mt-2 flex flex-wrap gap-1.5">
             {badges.map((badge) => (
               <span
@@ -638,7 +774,7 @@ function MovieRecommendationCard({
                 )}`}
               >
                 {badge === "In theaters" ? <Ticket className="h-3 w-3" /> : null}
-                <span className="truncate">{badge}</span>
+                <span className="truncate">{badge === "In theaters" ? "Listed in theaters" : badge}</span>
               </span>
             ))}
           </div>
@@ -825,6 +961,8 @@ function sanitizeRecommendedMovies(value: unknown): RecommendedMovie[] {
       releaseYear:
         typeof movie.releaseYear === "number" || typeof movie.releaseYear === "string" ? movie.releaseYear : "N/A",
       genre: typeof movie.genre === "string" && movie.genre.trim() ? movie.genre : "Unknown Genre",
+      runtime: sanitizeRuntime(movie.runtime),
+      originalLanguage: typeof movie.originalLanguage === "string" ? movie.originalLanguage.trim() || null : null,
       overview: typeof movie.overview === "string" ? movie.overview : undefined,
       popularity: typeof movie.popularity === "number" ? movie.popularity : undefined,
       voteAverage: typeof movie.voteAverage === "number" ? movie.voteAverage : undefined,
@@ -847,7 +985,7 @@ function normalizeMovieTitle(rawTitle: string): string {
 }
 
 function isLikelyMovieTitle(title: string): boolean {
-  if (title.length < 2 || title.length > 80) {
+  if (!title || title.length > 80 || !/[\p{L}\p{N}]/u.test(title)) {
     return false
   }
 
@@ -869,15 +1007,10 @@ function isLikelyMovieTitle(title: string): boolean {
 }
 
 export default function FilmPulse() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      content: "Hi! I'm your film recommendation assistant. Tell me some movies you like, and I'll suggest similar ones!",
-      isBot: true,
-    },
-  ])
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [inputText, setInputText] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [clockNow, setClockNow] = useState(() => Date.now())
   const [lastResponseId, setLastResponseId] = useState<string | null>(null)
   const lastResponseIdRef = useRef<string | null>(null)
   const [dictationMode, setDictationModeState] = useState<DictationMode>("idle")
@@ -903,12 +1036,24 @@ export default function FilmPulse() {
   const lastDictationErrorRef = useRef<string | null>(null)
   const nativeStartedAtRef = useRef(0)
   const dictationModeRef = useRef<DictationMode>("idle")
+  const dictationSessionRef = useRef(0)
+  const recommendationAbortRef = useRef<AbortController | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   useEffect(() => {
+    if (!isLoading) {
+      return
+    }
+    const intervalId = window.setInterval(() => setClockNow(Date.now()), 1000)
+    return () => window.clearInterval(intervalId)
+  }, [isLoading])
+
+  useEffect(() => {
     return () => {
+      recommendationAbortRef.current?.abort()
+      recommendationAbortRef.current = null
       manualStopRef.current = true
       recognitionRef.current?.abort()
       discardRecordingRef.current = true
@@ -966,6 +1111,7 @@ export default function FilmPulse() {
             type,
             title: movie.title,
             tmdbId: movie.tmdbId ?? null,
+            year: movieReleaseYear(movie),
           },
         ].slice(-40)
 
@@ -1093,6 +1239,7 @@ export default function FilmPulse() {
   }
 
   const transcribeRecording = async (audio: Blob, mimeType: string) => {
+    const dictationSession = dictationSessionRef.current
     if (!audio.size) {
       setDictationMode("idle")
       setDictationStatus("No speech was recorded.")
@@ -1104,16 +1251,24 @@ export default function FilmPulse() {
 
     try {
       const transcript = await transcribeDictationAudio(audio, mimeType)
+      if (dictationSession !== dictationSessionRef.current) {
+        return
+      }
       appendDictationText(transcript)
       setDictationStatus(transcript ? "Added dictation." : "No speech was transcribed.")
     } catch (error) {
-      setDictationStatus(error instanceof Error ? error.message : "Dictation could not be transcribed.")
+      if (dictationSession === dictationSessionRef.current) {
+        setDictationStatus(error instanceof Error ? error.message : "Dictation could not be transcribed.")
+      }
     } finally {
-      setDictationMode("idle")
+      if (dictationSession === dictationSessionRef.current) {
+        setDictationMode("idle")
+      }
     }
   }
 
   const startRecordingFallback = async () => {
+    const dictationSession = dictationSessionRef.current
     if (!hasMediaRecorderSupport() || isLoading) {
       setDictationSupported(Boolean(getSpeechRecognitionConstructor()))
       setDictationMode("idle")
@@ -1127,7 +1282,7 @@ export default function FilmPulse() {
       setDictationStatus("Starting microphone recording...")
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
 
-      if (isLoading) {
+      if (isLoading || dictationSession !== dictationSessionRef.current) {
         stream.getTracks().forEach((track) => track.stop())
         return
       }
@@ -1141,12 +1296,15 @@ export default function FilmPulse() {
       mediaRecorderRef.current = recorder
 
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (dictationSession === dictationSessionRef.current && event.data.size > 0) {
           audioChunksRef.current.push(event.data)
         }
       }
 
       recorder.onerror = () => {
+        if (dictationSession !== dictationSessionRef.current) {
+          return
+        }
         discardRecordingRef.current = true
         mediaRecorderRef.current = null
         stopMediaStream()
@@ -1155,6 +1313,9 @@ export default function FilmPulse() {
       }
 
       recorder.onstop = () => {
+        if (dictationSession !== dictationSessionRef.current) {
+          return
+        }
         const chunks = audioChunksRef.current
         const shouldDiscard = discardRecordingRef.current
         const recordedMimeType = recorder.mimeType || mimeType || "audio/webm"
@@ -1179,8 +1340,10 @@ export default function FilmPulse() {
       setDictationStatus("Recording. Click the microphone again to transcribe.")
     } catch (error) {
       stream?.getTracks().forEach((track) => track.stop())
-      setDictationMode("idle")
-      setDictationStatus(dictationRecordingErrorStatus(error))
+      if (dictationSession === dictationSessionRef.current) {
+        setDictationMode("idle")
+        setDictationStatus(dictationRecordingErrorStatus(error))
+      }
     }
   }
 
@@ -1338,6 +1501,48 @@ export default function FilmPulse() {
     stopDictation()
   }
 
+  const handleNewChat = () => {
+    if (isLoading || recommendationAbortRef.current) {
+      return
+    }
+
+    dictationSessionRef.current += 1
+    manualStopRef.current = true
+    const recognition = recognitionRef.current
+    recognitionRef.current = null
+    if (recognition) {
+      recognition.onresult = null
+      recognition.onerror = null
+      recognition.onend = null
+      recognition.onstart = null
+      recognition.abort()
+    }
+    discardRecordingRef.current = true
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop()
+    }
+    mediaRecorderRef.current = null
+    stopMediaStream()
+    audioChunksRef.current = []
+    nativeFallbackInProgressRef.current = false
+    lastDictationErrorRef.current = null
+    nativeStartedAtRef.current = 0
+    setDictationMode("idle")
+    setDictationStatus(DICTATION_OFF_STATUS)
+    setMessages([WELCOME_MESSAGE])
+    setFeedbackEvents([])
+    feedbackEventsRef.current = []
+    setLastResponseId(null)
+    lastResponseIdRef.current = null
+    setInputText("")
+    setPendingScrollRequest(null)
+    messageRefs.current = {}
+    requestAnimationFrame(() => {
+      chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" })
+      inputRef.current?.focus()
+    })
+  }
+
   const fetchMoviesWithPosters = async (movieTitles: string[]): Promise<RecommendedMovie[]> => {
     const titles = sanitizeMovieTitles(movieTitles)
 
@@ -1373,6 +1578,8 @@ export default function FilmPulse() {
             tmdbUrl: `https://www.themoviedb.org/movie/${movie.id}`,
             releaseYear,
             genre: movieDetails?.genres?.[0]?.name ?? "Unknown Genre",
+            runtime: sanitizeRuntime(movieDetails?.runtime),
+            originalLanguage: movieDetails?.original_language ?? null,
             overview: movieDetails?.overview ?? movie.overview,
             popularity: movieDetails?.popularity ?? movie.popularity,
             voteAverage: movieDetails?.vote_average ?? movie.vote_average,
@@ -1394,38 +1601,96 @@ export default function FilmPulse() {
     )
   }
 
-  const submitUserMessage = async (rawMessage: string) => {
+  const submitUserMessage = async (rawMessage: string, retryMessageId?: string) => {
     const userMessage = rawMessage.trim()
-    if (!userMessage || isLoading) {
+    if (!userMessage || isLoading || recommendationAbortRef.current) {
       return
     }
 
     stopDictation()
 
+    const retryIndex = retryMessageId ? messages.findIndex((message) => message.id === retryMessageId) : -1
+    const retryMessage = retryIndex > 0 && retryIndex === messages.length - 1 && messages[retryIndex].status === "error" && !messages[retryIndex].movies?.length
+      ? messages[retryIndex]
+      : undefined
+    if (retryMessageId && !retryMessage) {
+      return
+    }
+    const contextMessages = retryMessage ? messages.slice(0, retryIndex - 1) : messages
     const userMessageId = createMessageId("user")
-    const botMessageId = createMessageId("bot")
-    const hasPreviousUserMessage = messages.some((message) => !message.isBot)
+    const botMessageId = retryMessage?.id ?? createMessageId("bot")
+    const hasPreviousUserMessage = contextMessages.some((message) => !message.isBot)
+    const requestPreviousResponseId = retryMessage ? retryMessage.requestPreviousResponseId ?? null : lastResponseIdRef.current
+    const abortController = new AbortController()
+    recommendationAbortRef.current = abortController
+    const updateResponse = (updater: (message: Message) => Message) => {
+      if (recommendationAbortRef.current === abortController && !abortController.signal.aborted) {
+        updateMessageById(botMessageId, updater)
+      }
+    }
 
     let streamedResponseText = ""
     let metadataMovieTitles: string[] = []
     let metadataMovies: RecommendedMovie[] = []
+    let metadataReceived = false
+    let metadataIntent: ResponseIntent = "recommendation"
+    let metadataHasMovies = false
     let metadataMoviesAttached = false
     let streamErrored = false
-    const conversationHistory = messages
-      .filter((message) => message.content.trim().length > 0)
-      .slice(-12)
+    let streamCompleted = false
+    const showRecommendationError = (message: string) => {
+      updateResponse((currentMessage) => {
+        const hasMovies = Boolean(currentMessage.movies?.length)
+        return {
+          ...currentMessage,
+          content: hasMovies ? currentMessage.content : message,
+          notice: hasMovies ? message : undefined,
+          isLoadingMovies: false,
+          status: "error",
+        }
+      })
+    }
+    const conversationHistory = contextMessages
       .map((message) => ({
         role: message.isBot ? "assistant" : "user",
-        content: message.content,
+        content: message.isBot
+          ? [
+              message.content,
+              message.movies?.length
+                ? `Recommended films:\n${message.movies
+                    .map((movie) => `- ${movie.title} (${movie.releaseYear})${movie.reason ? `: ${movie.reason}` : ""}`)
+                    .join("\n")}`
+                : "",
+              message.followUpContent ?? "",
+            ].filter(Boolean).join("\n\n")
+          : message.content,
       }))
+      .filter((message) => message.content.trim().length > 0)
+      .slice(-12)
 
     setIsLoading(true)
+    const requestStartedAt = Date.now()
+    setClockNow(requestStartedAt)
     setInputText("")
-    setMessages((prevMessages) => [
-      ...prevMessages,
-      { id: userMessageId, content: userMessage, isBot: false, movies: [] },
-      { id: botMessageId, content: "", isBot: true, movies: [], isLoadingMovies: true, status: "finding" },
-    ])
+    const pendingMessage: Message = {
+      id: botMessageId,
+      content: "",
+      isBot: true,
+      movies: retryMessage?.movies ?? [],
+      isLoadingMovies: !retryMessage?.movies?.length,
+      status: "finding",
+      progress: { constraints: [], completedStages: [] },
+      requestStartedAt,
+      requestText: userMessage,
+      requestPreviousResponseId,
+    }
+    setMessages((prevMessages) => retryMessage
+      ? prevMessages.map((message) => message.id === botMessageId ? pendingMessage : message)
+      : [
+          ...prevMessages,
+          { id: userMessageId, content: userMessage, isBot: false, movies: [] },
+          pendingMessage,
+        ])
     setPendingScrollRequest({
       messageId: botMessageId,
       alignPage: !hasPreviousUserMessage,
@@ -1434,14 +1699,40 @@ export default function FilmPulse() {
     try {
       const response = await fetch("/api/getRecommendation", {
         method: "POST",
+        signal: abortController.signal,
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           userMessage,
           preference,
-          previousResponseId: lastResponseIdRef.current,
+          previousResponseId: requestPreviousResponseId,
           conversationHistory,
+          previousRecommendations: contextMessages
+            .filter((message) => message.isBot)
+            .flatMap((message) =>
+              (message.movies ?? []).map((movie) => ({
+                tmdbId: movie.tmdbId ?? null,
+                title: movie.title,
+                year: movie.releaseYear,
+                genre: movie.genre,
+                reason: movie.reason,
+                runtime: sanitizeRuntime(movie.runtime),
+                originalLanguage: movie.originalLanguage && /^[a-z]{2,3}$/i.test(movie.originalLanguage.trim())
+                  ? movie.originalLanguage.trim().toLowerCase()
+                  : null,
+                availability: movie.availability
+                  ? {
+                      region: movie.availability.region,
+                      inTheaters: movie.availability.inTheaters,
+                      streaming: sanitizeStringArray(movie.availability.streaming, 20),
+                      rent: sanitizeStringArray(movie.availability.rent, 20),
+                      buy: sanitizeStringArray(movie.availability.buy, 20),
+                    }
+                  : undefined,
+              }))
+            )
+            .slice(-60),
           feedbackEvents: feedbackEventsRef.current,
           watchPreferences,
         }),
@@ -1467,6 +1758,9 @@ export default function FilmPulse() {
       let buffer = ""
 
       const handleServerEvent = (eventName: string, rawData: string) => {
+        if (recommendationAbortRef.current !== abortController || abortController.signal.aborted) {
+          return
+        }
         let parsedData: unknown = {}
 
         if (rawData.trim()) {
@@ -1477,6 +1771,24 @@ export default function FilmPulse() {
           }
         }
 
+        if (eventName === "status") {
+          if (typeof parsedData === "object" && parsedData !== null) {
+            const progress = parsedData as { stage?: unknown; brief?: unknown; constraints?: unknown; completedStages?: unknown }
+            updateResponse((message) => ({
+              ...message,
+              progress: {
+                stage: isRequestStage(progress.stage) ? progress.stage : message.progress?.stage,
+                brief: typeof progress.brief === "string" ? progress.brief.trim().slice(0, 300) : message.progress?.brief,
+                constraints: Array.isArray(progress.constraints) ? sanitizeStringArray(progress.constraints, 6) : message.progress?.constraints ?? [],
+                completedStages: Array.isArray(progress.completedStages)
+                  ? [...new Set(progress.completedStages.filter(isRequestStage))]
+                  : message.progress?.completedStages ?? [],
+              },
+            }))
+          }
+          return
+        }
+
         if (eventName === "token") {
           const delta =
             typeof parsedData === "object" && parsedData !== null && "delta" in parsedData
@@ -1485,7 +1797,7 @@ export default function FilmPulse() {
 
           if (typeof delta === "string" && delta.length > 0) {
             streamedResponseText += delta
-            updateMessageById(botMessageId, (message) => ({
+            updateResponse((message) => ({
               ...message,
               content: `${message.content}${delta}`,
               status: "streaming",
@@ -1501,7 +1813,7 @@ export default function FilmPulse() {
               : undefined
 
           if (typeof delta === "string" && delta.length > 0) {
-            updateMessageById(botMessageId, (message) => ({
+            updateResponse((message) => ({
               ...message,
               followUpContent: `${message.followUpContent ?? ""}${delta}`,
               status: "streaming",
@@ -1512,7 +1824,12 @@ export default function FilmPulse() {
 
         if (eventName === "metadata") {
           if (typeof parsedData === "object" && parsedData !== null) {
-            const metadata = parsedData as { responseId?: unknown; movieTitles?: unknown; movies?: unknown }
+            metadataReceived = true
+            const metadata = parsedData as { responseId?: unknown; movieTitles?: unknown; movies?: unknown; intent?: unknown }
+            if (metadata.intent === "conversation" || metadata.intent === "clarification" || metadata.intent === "recommendation") {
+              metadataIntent = metadata.intent
+            }
+            updateResponse((message) => ({ ...message, intent: metadataIntent }))
 
             if (typeof metadata.responseId === "string" && metadata.responseId.trim()) {
               lastResponseIdRef.current = metadata.responseId
@@ -1528,10 +1845,18 @@ export default function FilmPulse() {
               )
             }
 
+            metadataHasMovies = Array.isArray(metadata.movies)
             metadataMovies = sanitizeRecommendedMovies(metadata.movies)
+            if (metadataIntent !== "recommendation") {
+              updateResponse((currentMessage) => ({
+                ...currentMessage,
+                isLoadingMovies: false,
+                status: "streaming",
+              }))
+            }
             if (metadataMovies.length > 0) {
               metadataMoviesAttached = true
-              updateMessageById(botMessageId, (currentMessage) => ({
+              updateResponse((currentMessage) => ({
                 ...currentMessage,
                 movies: metadataMovies,
                 isLoadingMovies: false,
@@ -1542,6 +1867,11 @@ export default function FilmPulse() {
           return
         }
 
+        if (eventName === "done") {
+          streamCompleted = true
+          return
+        }
+
         if (eventName === "error") {
           streamErrored = true
           const message =
@@ -1549,16 +1879,11 @@ export default function FilmPulse() {
               ? (parsedData as { message?: unknown }).message
               : undefined
 
-          updateMessageById(botMessageId, (currentMessage) => ({
-            ...currentMessage,
-            content:
-              typeof message === "string" && message.trim()
-                ? message
-                : "Sorry, I'm having trouble connecting to the recommendation service. Please try again later.",
-            movies: [],
-            isLoadingMovies: false,
-            status: "error",
-          }))
+          showRecommendationError(
+            typeof message === "string" && message.trim()
+              ? message
+              : "Sorry, I'm having trouble connecting to the recommendation service. Please try again later."
+          )
         }
       }
 
@@ -1591,13 +1916,21 @@ export default function FilmPulse() {
       }
 
       if (!streamErrored) {
+        if (!streamCompleted || !metadataReceived) {
+          throw new Error("The recommendation connection ended before it finished. Please try again.")
+        }
+
         if (!streamedResponseText.trim()) {
-          updateMessageById(botMessageId, (currentMessage) => ({
+          showRecommendationError("I couldn't finish the recommendation response. Please try again.")
+          return
+        }
+
+        if (metadataIntent !== "recommendation") {
+          updateResponse((currentMessage) => ({
             ...currentMessage,
-            content: "I couldn't generate a recommendation this time. Try asking in a different way.",
-            movies: [],
+            notice: undefined,
             isLoadingMovies: false,
-            status: "error",
+            status: "complete",
           }))
           return
         }
@@ -1608,16 +1941,19 @@ export default function FilmPulse() {
             : sanitizeMovieTitles(extractMovieTitles(streamedResponseText))
         if (!metadataMoviesAttached) {
           const moviesWithPosters =
-            metadataMovies.length > 0 ? metadataMovies : await fetchMoviesWithPosters(movieTitles)
+            metadataHasMovies ? metadataMovies : await fetchMoviesWithPosters(movieTitles)
 
-          updateMessageById(botMessageId, (currentMessage) => ({
+          updateResponse((currentMessage) => ({
             ...currentMessage,
             movies: moviesWithPosters,
+            notice: moviesWithPosters.length === 0
+              ? "No verified film matches were found. Try broadening your viewing filters or naming another movie you like."
+              : undefined,
             isLoadingMovies: false,
-            status: "complete",
+            status: moviesWithPosters.length > 0 ? "complete" : "error",
           }))
         } else {
-          updateMessageById(botMessageId, (currentMessage) => ({
+          updateResponse((currentMessage) => ({
             ...currentMessage,
             isLoadingMovies: false,
             status: "complete",
@@ -1629,15 +1965,12 @@ export default function FilmPulse() {
         ? error.message
         : "Sorry, I'm having trouble connecting to the recommendation service. Please try again later."
 
-      updateMessageById(botMessageId, (currentMessage) => ({
-        ...currentMessage,
-        content: message,
-        movies: [],
-        isLoadingMovies: false,
-        status: "error",
-      }))
+      showRecommendationError(message)
     } finally {
-      setIsLoading(false)
+      if (recommendationAbortRef.current === abortController) {
+        recommendationAbortRef.current = null
+        setIsLoading(false)
+      }
     }
   }
 
@@ -1651,8 +1984,12 @@ export default function FilmPulse() {
   }
 
   const handleShowMoreLikeThis = (movie: RecommendedMovie) => {
-    setMovieFeedbackEvent(movie, "more_like_this")
-    void submitUserMessage(`Show me more movies like ${movie.title}.`)
+    const feedbackState = getMovieFeedbackState(movie)
+    if (feedbackState !== "liked" && feedbackState !== "loved_this") {
+      setMovieFeedbackEvent(movie, "more_like_this")
+    }
+    const year = movieReleaseYear(movie)
+    void submitUserMessage(`Show me more movies like ${movie.title}${year ? ` (${year})` : ""}.`)
   }
 
   const watchModeButtonClass = (mode: WatchMode): string =>
@@ -1780,16 +2117,30 @@ export default function FilmPulse() {
                 </label>
               </div>
             ) : null}
+            <p className="text-xs text-gray-400">
+              Watch availability: {displayName(TMDB_REGION, "region") ?? "your configured region"}
+              {watchMode === "theaters" ? <span className="mt-1 block">Regional listings; check local showtimes.</span> : null}
+            </p>
           </div>
         </div>
 
         <Card
           ref={chatPanelRef}
           className={`bg-gray-800 border-gray-700 shadow-xl ${
-            hasStartedConversation ? "flex min-h-[calc(100vh-5.5rem)] flex-1" : ""
+            hasStartedConversation ? "flex h-[calc(100svh-2rem)] min-h-[28rem]" : ""
           }`}
         >
           <CardContent className={`p-3 sm:p-6 ${hasStartedConversation ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                onClick={handleNewChat}
+                disabled={isLoading}
+                className="rounded-full border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                New chat
+              </button>
+            </div>
             <div
               ref={chatScrollRef}
               className={`space-y-4 mb-4 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800 ${
@@ -1798,9 +2149,10 @@ export default function FilmPulse() {
             >
               <AnimatePresence>
                 {visibleMessages.map((msg) => {
-                  const hasRecommendationArea =
-                    msg.isBot && (msg.isLoadingMovies || Boolean(msg.movies && msg.movies.length > 0))
                   const isFinding = msg.status === "finding" && !msg.content.trim()
+                  const hasRecommendationArea =
+                    msg.isBot && (Boolean(msg.movies?.length) || (!isFinding && msg.intent === "recommendation" && msg.isLoadingMovies))
+                  const isRequestPending = isLoading && msg.isBot && msg.id === latestAssistantMessageId
                   const isLatestAssistantStreaming = msg.id === latestAssistantMessageId && msg.status === "streaming"
                   const hasFollowUp = Boolean(msg.followUpContent?.trim())
                   const isIntroAnimating = isLatestAssistantStreaming && !hasFollowUp
@@ -1829,12 +2181,14 @@ export default function FilmPulse() {
                           : "bg-gradient-to-r from-purple-400 to-pink-600 text-white"
                       }`}
                     >
-                      {isFinding ? (
-                        <div className="flex items-center gap-2 text-sm text-gray-200">
-                          <Loader2 className="h-4 w-4 animate-spin text-purple-300" />
-                          <span>Finding films...</span>
-                        </div>
-                      ) : msg.content.trim() ? (
+                      {isRequestPending ? (
+                        <RequestProgressPanel
+                          progress={msg.progress}
+                          elapsedSeconds={Math.max(0, Math.floor((clockNow - (msg.requestStartedAt ?? clockNow)) / 1000))}
+                        />
+                      ) : null}
+
+                      {msg.content.trim() && !(isRequestPending && msg.content.trim() === msg.progress?.brief?.trim()) ? (
                         <ChatMarkdown content={msg.content} isAnimating={isIntroAnimating} />
                       ) : null}
 
@@ -1842,14 +2196,14 @@ export default function FilmPulse() {
                         <div className="mt-4 space-y-3">
                           <div className="flex items-center justify-between gap-3">
                             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-gray-300">
-                              Here are my picks
+                              {msg.isLoadingMovies ? "Your picks are taking shape" : "Here are my picks"}
                             </p>
                             {msg.isLoadingMovies ? (
-                              <span className="text-xs text-gray-400">Matching posters and details...</span>
+                              <span className="text-xs text-gray-400">Verified film details will appear here.</span>
                             ) : null}
                           </div>
 
-                          <AnimatePresence mode="popLayout">
+                          <AnimatePresence>
                             {msg.isLoadingMovies
                               ? [0, 1, 2].map((item) => <MovieCardSkeleton key={`skeleton-${msg.id}-${item}`} />)
                               : msg.movies?.map((movie, movieIndex) => (
@@ -1861,6 +2215,7 @@ export default function FilmPulse() {
                                     isLoading={isLoading}
                                     onMoreLikeThis={handleShowMoreLikeThis}
                                     onFeedback={handleMovieFeedback}
+                                    watchPreferences={watchPreferences}
                                   />
                                 ))}
                           </AnimatePresence>
@@ -1871,6 +2226,24 @@ export default function FilmPulse() {
                         <div className="mt-4 border-t border-gray-600/60 pt-3">
                           <ChatMarkdown content={msg.followUpContent ?? ""} isAnimating={isFollowUpAnimating} />
                         </div>
+                      ) : null}
+
+                      {msg.notice ? (
+                        <p role="status" className="mt-4 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
+                          {msg.notice}
+                        </p>
+                      ) : null}
+
+                      {msg.status === "error" && !msg.movies?.length && msg.id === latestAssistantMessageId && msg.requestText ? (
+                        <button
+                          type="button"
+                          onClick={() => void submitUserMessage(msg.requestText ?? "", msg.id)}
+                          disabled={isLoading}
+                          className="mt-3 inline-flex items-center gap-2 rounded-full border border-purple-300/40 bg-purple-300/10 px-3 py-2 text-xs font-medium text-purple-100 hover:bg-purple-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                          Retry request
+                        </button>
                       ) : null}
                     </div>
                     </motion.div>
