@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useRef, useState, FormEvent, ChangeEvent } from "react"
-import { Input } from "@/components/ui/input"
+import { useEffect, useRef, useState, FormEvent } from "react"
+import { MovieTitleInput } from "@/components/movie-title-input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faTwitter, faTelegram, faLinkedin, faGithub } from '@fortawesome/free-brands-svg-icons'
 import { Check, Globe, Heart, Loader2, Mic, MicOff, Play, RotateCcw, Send, Sparkles, ThumbsDown, ThumbsUp, Ticket } from "lucide-react"
@@ -187,35 +188,35 @@ function isRequestStage(value: unknown): value is RequestStage {
 
 function RequestProgressPanel({ progress, elapsedSeconds }: { progress?: RequestProgress; elapsedSeconds: number }) {
   return (
-    <div className="mb-4 overflow-hidden rounded-xl border border-purple-300/20 bg-gradient-to-br from-purple-400/10 to-gray-900/20 p-3.5 sm:p-4">
+    <div className="mb-4 overflow-hidden rounded-xl border border-primary/20 bg-primary/10 p-3.5 sm:p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-purple-300/20 bg-purple-300/10">
-            <Sparkles className="h-4 w-4 text-purple-200 motion-safe:animate-pulse" aria-hidden="true" />
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-primary/20 bg-primary/10">
+            <Sparkles className="h-4 w-4 text-brand motion-safe:animate-pulse" aria-hidden="true" />
           </span>
-          <p role="status" aria-live="polite" className="text-sm font-medium text-purple-100">
+          <p role="status" aria-live="polite" className="text-sm font-medium text-brand">
             {progress?.stage ? REQUEST_STAGE_LABELS[progress.stage] : "Connecting to FilmPulse"}
           </p>
         </div>
-        <span role="timer" aria-live="off" className="shrink-0 text-xs tabular-nums text-gray-400">
+        <span role="timer" aria-live="off" className="shrink-0 text-xs tabular-nums text-muted-foreground">
           {elapsedSeconds}s elapsed
         </span>
       </div>
-      {progress?.brief ? <p className="mt-3 text-sm leading-relaxed text-gray-200">{progress.brief}</p> : null}
+      {progress?.brief ? <p className="mt-3 text-sm leading-relaxed text-foreground">{progress.brief}</p> : null}
       {progress?.constraints.length ? (
         <div className="mt-2.5 flex flex-wrap gap-1.5" aria-label="Your preferences">
           {progress.constraints.map((constraint) => (
-            <span key={constraint} className="rounded-full border border-gray-500/50 bg-gray-900/20 px-2.5 py-1 text-[11px] text-gray-300">
+            <span key={constraint} className="rounded-full border border-border/50 bg-background/20 px-2.5 py-1 text-[11px] text-secondary-foreground">
               {constraint}
             </span>
           ))}
         </div>
       ) : null}
       {progress?.completedStages.some((stage) => stage !== "complete") ? (
-        <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 border-t border-purple-200/10 pt-2.5 text-[11px] text-gray-400" aria-label="Completed steps">
+        <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 border-t border-primary/10 pt-2.5 text-[11px] text-muted-foreground" aria-label="Completed steps">
           {progress.completedStages.filter((stage) => stage !== "complete").map((stage) => (
             <li key={stage} className="inline-flex items-center gap-1.5">
-              <Check className="h-3 w-3 text-emerald-300" aria-hidden="true" />
+              <Check className="h-3 w-3 text-brand" aria-hidden="true" />
               {REQUEST_COMPLETED_LABELS[stage]}
             </li>
           ))}
@@ -386,23 +387,23 @@ async function transcribeDictationAudio(audio: Blob, mimeType: string): Promise<
 }
 
 function WebsiteIcon() {
-  return <Globe size={24} style={{ margin: "0 10px", color: "white" }} aria-hidden="true" />
+  return <Globe size={24} style={{ margin: "0 10px", color: "hsl(var(--foreground))" }} aria-hidden="true" />
 }
 
 function MovieCardSkeleton() {
   return (
-    <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 rounded-xl border border-gray-600/70 bg-gray-900/35 p-3 sm:flex sm:gap-4 sm:rounded-lg">
-      <div className="h-28 w-[72px] shrink-0 animate-pulse rounded-lg bg-gray-700 sm:w-20 sm:rounded-md" />
+    <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 rounded-xl border border-border/70 bg-background/35 p-3 sm:flex sm:gap-4 sm:rounded-lg">
+      <div className="h-28 w-[72px] shrink-0 animate-pulse rounded-lg bg-muted sm:w-20 sm:rounded-md" />
       <div className="min-w-0 flex-1 space-y-3 py-1">
-        <div className="h-4 w-2/3 animate-pulse rounded bg-gray-700" />
-        <div className="h-3 w-1/3 animate-pulse rounded bg-gray-700" />
+        <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
+        <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
         <div className="space-y-2">
-          <div className="h-3 w-full animate-pulse rounded bg-gray-700" />
-          <div className="h-3 w-5/6 animate-pulse rounded bg-gray-700" />
+          <div className="h-3 w-full animate-pulse rounded bg-muted" />
+          <div className="h-3 w-5/6 animate-pulse rounded bg-muted" />
         </div>
         <div className="flex gap-2">
-          <div className="h-7 w-24 animate-pulse rounded-full bg-gray-700" />
-          <div className="h-7 w-16 animate-pulse rounded-full bg-gray-700" />
+          <div className="h-7 w-24 animate-pulse rounded-full bg-muted" />
+          <div className="h-7 w-16 animate-pulse rounded-full bg-muted" />
         </div>
       </div>
     </div>
@@ -461,15 +462,15 @@ function movieReleaseYear(movie: RecommendedMovie): number | null {
 
 function availabilityBadgeClass(label: string): string {
   if (label === "In theaters") {
-    return "border-pink-400/60 bg-pink-500/15 text-pink-100"
+    return "border-primary/60 bg-primary/15 text-brand"
   }
   if (label.startsWith("Stream")) {
-    return "border-purple-400/60 bg-purple-500/15 text-purple-100"
+    return "border-primary/60 bg-primary/15 text-brand"
   }
   if (label === "Availability unknown") {
-    return "border-gray-600 bg-gray-800 text-gray-300"
+    return "border-border bg-card text-secondary-foreground"
   }
-  return "border-gray-500/70 bg-gray-800 text-gray-200"
+  return "border-border/70 bg-card text-foreground"
 }
 
 function providerNames(providers?: TmdbWatchProvider[]): string[] {
@@ -737,7 +738,7 @@ function MovieRecommendationCard({
       initial={{ opacity: 0, x: -120, scale: 0.985 }}
       animate={{ opacity: 1, x: 0, scale: 1 }}
       transition={{ delay: index * 0.08, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-      className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 rounded-2xl border border-gray-600/70 bg-gray-900/35 p-3 text-left shadow-lg shadow-black/10 sm:flex sm:gap-4 sm:rounded-lg sm:shadow-none"
+      className="grid grid-cols-[86px_minmax(0,1fr)] gap-3 rounded-2xl border border-border/70 bg-background/35 p-3 text-left shadow-lg shadow-black/10 sm:flex sm:gap-4 sm:rounded-lg sm:shadow-none"
     >
       {movie.poster ? (
         <img
@@ -747,7 +748,7 @@ function MovieRecommendationCard({
           className="h-[129px] w-[86px] shrink-0 rounded-xl object-cover shadow-md sm:h-28 sm:w-20 sm:rounded-md"
         />
       ) : (
-        <div className="flex h-[129px] w-[86px] shrink-0 items-center justify-center rounded-xl bg-gray-700 text-center text-[11px] text-gray-400 sm:h-28 sm:w-20 sm:rounded-md">
+        <div className="flex h-[129px] w-[86px] shrink-0 items-center justify-center rounded-xl bg-muted text-center text-[11px] text-muted-foreground sm:h-28 sm:w-20 sm:rounded-md">
           No Image
         </div>
       )}
@@ -755,15 +756,15 @@ function MovieRecommendationCard({
       <div className="contents min-w-0 flex-1 sm:block">
         <div className="min-w-0 self-start">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <h3 className="min-w-0 text-[15px] font-semibold leading-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 sm:text-sm">
+            <h3 className="min-w-0 text-[15px] font-semibold leading-tight text-brand sm:text-sm">
               {movie.title}
             </h3>
-            <span className="text-[12px] leading-tight text-gray-400 sm:text-xs">
+            <span className="text-[12px] leading-tight text-muted-foreground sm:text-xs">
               {movie.releaseYear} | {movie.genre}
             </span>
           </div>
 
-          {filmDetails ? <p className="mt-1 text-xs text-gray-400">{filmDetails}</p> : null}
+          {filmDetails ? <p className="mt-1 text-xs text-muted-foreground">{filmDetails}</p> : null}
 
           <div className="mt-2 flex flex-wrap gap-1.5">
             {badges.map((badge) => (
@@ -782,9 +783,9 @@ function MovieRecommendationCard({
 
         <div className="col-span-2 min-w-0 sm:col-span-1">
           {movie.reason ? (
-            <p className="mt-1 text-[13px] leading-relaxed text-gray-200 sm:mt-2 sm:text-sm">{movie.reason}</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-foreground sm:mt-2 sm:text-sm">{movie.reason}</p>
           ) : movie.overview ? (
-            <p className="mt-1 max-h-20 overflow-hidden text-[13px] leading-relaxed text-gray-300 sm:mt-2 sm:max-h-16 sm:text-sm">
+            <p className="mt-1 max-h-20 overflow-hidden text-[13px] leading-relaxed text-secondary-foreground sm:mt-2 sm:max-h-16 sm:text-sm">
               {movie.overview}
             </p>
           ) : null}
@@ -792,7 +793,7 @@ function MovieRecommendationCard({
           <div className="mt-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
             <button
               type="button"
-              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border border-purple-400/40 bg-purple-400/10 px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-purple-400/20 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
+              className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-2 text-[12px] font-medium leading-tight text-foreground hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
               onClick={() => onMoreLikeThis(movie)}
               disabled={isLoading}
             >
@@ -801,8 +802,8 @@ function MovieRecommendationCard({
             </button>
             <button
               type="button"
-              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-gray-700 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
-                likedSelected ? "border-purple-400/70 bg-purple-500/20" : "border-gray-500/70 bg-gray-800"
+              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
+                likedSelected ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90" : "border-border/70 bg-card text-foreground hover:bg-muted"
               }`}
               onClick={() => onFeedback(movie, "liked")}
               aria-pressed={likedSelected}
@@ -812,8 +813,8 @@ function MovieRecommendationCard({
             </button>
             <button
               type="button"
-              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-gray-700 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
-                lovedSelected ? "border-pink-400/70 bg-pink-500/20" : "border-gray-500/70 bg-gray-800"
+              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
+                lovedSelected ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90" : "border-border/70 bg-card text-foreground hover:bg-muted"
               }`}
               onClick={() => onFeedback(movie, "loved_this")}
               aria-pressed={lovedSelected}
@@ -826,8 +827,8 @@ function MovieRecommendationCard({
             </button>
             <button
               type="button"
-              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-gray-700 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
-                notInterestedSelected ? "border-pink-400/70 bg-pink-500/20" : "border-gray-500/70 bg-gray-800"
+              className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 py-2 text-[12px] font-medium leading-tight sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs ${
+                notInterestedSelected ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90" : "border-border/70 bg-card text-foreground hover:bg-muted"
               }`}
               onClick={() => onFeedback(movie, "not_interested")}
               aria-pressed={notInterestedSelected}
@@ -840,7 +841,7 @@ function MovieRecommendationCard({
                 href={watchUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border border-purple-400/50 bg-purple-400/10 px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-purple-400/20 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
+                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-3 py-2 text-[12px] font-medium leading-tight text-foreground hover:bg-primary/20 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
               >
                 <Play className="h-3.5 w-3.5" />
                 {watchLabel}
@@ -851,7 +852,7 @@ function MovieRecommendationCard({
                 href={movie.tmdbUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex min-h-10 items-center justify-center rounded-full border border-gray-500/70 bg-gray-800 px-3 py-2 text-[12px] font-medium leading-tight text-white hover:bg-gray-700 sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
+                className="inline-flex min-h-10 items-center justify-center rounded-full border border-border/70 bg-card px-3 py-2 text-[12px] font-medium leading-tight text-foreground hover:bg-muted sm:min-h-0 sm:justify-start sm:py-1 sm:text-xs"
               >
                 TMDB
               </a>
@@ -1021,7 +1022,7 @@ export default function FilmPulse() {
   const [selectedStreamingProviders, setSelectedStreamingProviders] = useState<string[]>([])
   const [includeRentals, setIncludeRentals] = useState(false)
   const [feedbackEvents, setFeedbackEvents] = useState<FeedbackEvent[]>([])
-  const [pendingScrollRequest, setPendingScrollRequest] = useState<{ messageId: string; alignPage: boolean } | null>(
+  const [pendingScrollRequest, setPendingScrollRequest] = useState<{ messageId: string } | null>(
     null
   )
   const feedbackEventsRef = useRef<FeedbackEvent[]>([])
@@ -1038,8 +1039,6 @@ export default function FilmPulse() {
   const dictationModeRef = useRef<DictationMode>("idle")
   const dictationSessionRef = useRef(0)
   const recommendationAbortRef = useRef<AbortController | null>(null)
-  const chatScrollRef = useRef<HTMLDivElement | null>(null)
-  const chatPanelRef = useRef<HTMLDivElement | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   useEffect(() => {
@@ -1142,49 +1141,16 @@ export default function FilmPulse() {
     delete messageRefs.current[messageId]
   }
 
-  const smoothScrollToMessageTop = (messageId: string, offset = 8, alignPage = false) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const container = chatScrollRef.current
-        const messageElement = messageRefs.current[messageId]
-
-        if (!container || !messageElement) {
-          return
-        }
-
-        if (alignPage) {
-          messageElement.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          })
-          return
-        }
-
-        const containerRect = container.getBoundingClientRect()
-        const messageRect = messageElement.getBoundingClientRect()
-        const targetTop = container.scrollTop + (messageRect.top - containerRect.top) - offset
-
-        container.scrollTo({
-          top: Math.max(0, targetTop),
-          behavior: "smooth",
-        })
-      })
-    })
-  }
-
   useEffect(() => {
     if (!pendingScrollRequest) {
       return
     }
 
     const timeoutId = window.setTimeout(() => {
-      if (pendingScrollRequest.alignPage) {
-        chatPanelRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        })
-      }
-      smoothScrollToMessageTop(pendingScrollRequest.messageId, 12, !pendingScrollRequest.alignPage)
+      messageRefs.current[pendingScrollRequest.messageId]?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      })
       setPendingScrollRequest(null)
     }, 50)
 
@@ -1538,8 +1504,8 @@ export default function FilmPulse() {
     setPendingScrollRequest(null)
     messageRefs.current = {}
     requestAnimationFrame(() => {
-      chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" })
-      inputRef.current?.focus()
+      window.scrollTo({ top: 0, behavior: "auto" })
+      inputRef.current?.focus({ preventScroll: true })
     })
   }
 
@@ -1619,7 +1585,6 @@ export default function FilmPulse() {
     const contextMessages = retryMessage ? messages.slice(0, retryIndex - 1) : messages
     const userMessageId = createMessageId("user")
     const botMessageId = retryMessage?.id ?? createMessageId("bot")
-    const hasPreviousUserMessage = contextMessages.some((message) => !message.isBot)
     const requestPreviousResponseId = retryMessage ? retryMessage.requestPreviousResponseId ?? null : lastResponseIdRef.current
     const abortController = new AbortController()
     recommendationAbortRef.current = abortController
@@ -1693,7 +1658,6 @@ export default function FilmPulse() {
         ])
     setPendingScrollRequest({
       messageId: botMessageId,
-      alignPage: !hasPreviousUserMessage,
     })
 
     try {
@@ -1995,8 +1959,8 @@ export default function FilmPulse() {
   const watchModeButtonClass = (mode: WatchMode): string =>
     `inline-flex min-h-10 items-center justify-center gap-2 rounded-full border px-3 py-2 text-sm font-medium transition-colors ${
       watchMode === mode
-        ? "border-pink-400/70 bg-pink-500/20 text-white"
-        : "border-gray-600 bg-gray-800/70 text-gray-300 hover:bg-gray-700"
+        ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
+        : "border-border bg-card/70 text-secondary-foreground hover:bg-muted"
     }`
   const isDictating = dictationMode === "native" || dictationMode === "recording"
   const isTranscribingDictation = dictationMode === "transcribing"
@@ -2010,30 +1974,23 @@ export default function FilmPulse() {
     : messages
 
   return (
-    <div
-      className={`min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 text-white ${
-        hasStartedConversation ? "py-3 sm:py-4" : "py-8"
-      }`}
-    >
-      <div
-        className={`mx-auto w-full ${
-          hasStartedConversation
-            ? "flex min-h-[calc(100vh-2rem)] max-w-5xl flex-col px-3 sm:px-4"
-            : "max-w-4xl p-4"
-        }`}
-      >
-        <div className="overflow-hidden">
-          <header className="text-center mb-8">
-            <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-4">
+    <div className="min-h-screen bg-background text-foreground pb-6">
+      <div className="w-full">
+        <div>
+          <header className="filmpulse-header text-center mb-6 px-3 py-4 sm:px-6">
+            <div className="mb-3 flex justify-end">
+              <ThemeToggle />
+            </div>
+            <h1 className="text-5xl font-bold text-brand mb-4">
               FilmPulse
             </h1>
-            <p className="text-lg text-gray-300">
+            <p className="text-lg text-secondary-foreground">
               Discover hidden gems and international cinema with AI-powered recommendations
             </p>
           </header>
 
-          <div className="flex flex-col items-center mb-6">
-            <p className="text-gray-300 text-sm mb-2">
+          <div className="flex flex-col items-center mb-6 px-3 sm:px-6">
+            <p className="text-secondary-foreground text-sm mb-2">
               Film Preference
             </p>
             <input
@@ -2045,13 +2002,13 @@ export default function FilmPulse() {
               onChange={(e) => setPreference(parseFloat(e.target.value))}
               className="filmpulse-slider w-3/4 cursor-pointer"
             />
-            <div className="flex justify-between w-3/4 text-gray-400 text-xs mt-1">
+            <div className="flex justify-between w-3/4 text-muted-foreground text-xs mt-1">
               <span>Indie/Hidden Gems</span>
               <span>Popular</span>
             </div>
           </div>
 
-          <div className="mb-6 space-y-3 rounded-lg border border-gray-700 bg-gray-800/60 p-3">
+          <div className="mx-3 mb-6 space-y-3 rounded-lg border border-border/70 bg-card/60 p-3 sm:mx-6">
             <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
@@ -2094,8 +2051,8 @@ export default function FilmPulse() {
                         type="button"
                         className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                           selected
-                            ? "border-purple-300/70 bg-purple-500/25 text-white"
-                            : "border-gray-600 bg-gray-900/50 text-gray-300 hover:bg-gray-700"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-background/50 text-secondary-foreground hover:bg-muted"
                         }`}
                         onClick={() => toggleStreamingProvider(provider.value)}
                         aria-pressed={selected}
@@ -2106,47 +2063,37 @@ export default function FilmPulse() {
                   })}
                 </div>
 
-                <label className="inline-flex items-center gap-2 rounded-full border border-gray-600 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
+                <label className="inline-flex items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-2 text-sm text-foreground">
                   <input
                     type="checkbox"
                     checked={includeRentals}
                     onChange={(event) => setIncludeRentals(event.target.checked)}
-                    className="h-4 w-4 rounded border-gray-500 bg-gray-800 accent-pink-500"
+                    className="h-4 w-4 rounded border-border bg-card accent-primary"
                   />
                   Open to rentals
                 </label>
               </div>
             ) : null}
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-muted-foreground">
               Watch availability: {displayName(TMDB_REGION, "region") ?? "your configured region"}
               {watchMode === "theaters" ? <span className="mt-1 block">Regional listings; check local showtimes.</span> : null}
             </p>
           </div>
         </div>
 
-        <Card
-          ref={chatPanelRef}
-          className={`bg-gray-800 border-gray-700 shadow-xl ${
-            hasStartedConversation ? "flex h-[calc(100svh-2rem)] min-h-[28rem]" : ""
-          }`}
-        >
-          <CardContent className={`p-3 sm:p-6 ${hasStartedConversation ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+        <Card className="rounded-none border-0 border-t border-border/70 bg-card shadow-none">
+          <CardContent className="p-3 sm:p-6">
             <div className="mb-3 flex justify-end">
               <button
                 type="button"
                 onClick={handleNewChat}
                 disabled={isLoading}
-                className="rounded-full border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-full border border-border px-3 py-1.5 text-xs text-secondary-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
               >
                 New chat
               </button>
             </div>
-            <div
-              ref={chatScrollRef}
-              className={`space-y-4 mb-4 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800 ${
-                hasStartedConversation ? "min-h-0 flex-1 pr-1 sm:pr-2" : "max-h-[60vh]"
-              }`}
-            >
+            <div className="space-y-4 mb-4">
               <AnimatePresence>
                 {visibleMessages.map((msg) => {
                   const isFinding = msg.status === "finding" && !msg.content.trim()
@@ -2166,7 +2113,7 @@ export default function FilmPulse() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -20 }}
                       transition={{ duration: 0.3 }}
-                      className={`flex ${msg.isBot ? "justify-start" : "justify-end"}`}
+                      className={`flex scroll-mt-3 ${msg.isBot ? "justify-start" : "justify-end"}`}
                     >
                     <div
                       className={`${
@@ -2177,8 +2124,8 @@ export default function FilmPulse() {
                           : "max-w-[88%] sm:max-w-[80%]"
                       } p-2.5 rounded-lg sm:p-3 ${
                         msg.isBot
-                          ? "bg-gray-700 text-white"
-                          : "bg-gradient-to-r from-purple-400 to-pink-600 text-white"
+                          ? "bg-muted text-foreground"
+                          : "filmpulse-user-message bg-primary text-primary-foreground"
                       }`}
                     >
                       {isRequestPending ? (
@@ -2195,11 +2142,11 @@ export default function FilmPulse() {
                       {hasRecommendationArea && (
                         <div className="mt-4 space-y-3">
                           <div className="flex items-center justify-between gap-3">
-                            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-gray-300">
+                            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-secondary-foreground">
                               {msg.isLoadingMovies ? "Your picks are taking shape" : "Here are my picks"}
                             </p>
                             {msg.isLoadingMovies ? (
-                              <span className="text-xs text-gray-400">Verified film details will appear here.</span>
+                              <span className="text-xs text-muted-foreground">Verified film details will appear here.</span>
                             ) : null}
                           </div>
 
@@ -2223,13 +2170,13 @@ export default function FilmPulse() {
                       )}
 
                       {hasFollowUp ? (
-                        <div className="mt-4 border-t border-gray-600/60 pt-3">
+                        <div className="mt-4 border-t border-border/60 pt-3">
                           <ChatMarkdown content={msg.followUpContent ?? ""} isAnimating={isFollowUpAnimating} />
                         </div>
                       ) : null}
 
                       {msg.notice ? (
-                        <p role="status" className="mt-4 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
+                        <p role="status" className="mt-4 rounded-lg border border-amber-700/40 bg-amber-100 p-3 text-sm text-amber-950 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
                           {msg.notice}
                         </p>
                       ) : null}
@@ -2239,7 +2186,7 @@ export default function FilmPulse() {
                           type="button"
                           onClick={() => void submitUserMessage(msg.requestText ?? "", msg.id)}
                           disabled={isLoading}
-                          className="mt-3 inline-flex items-center gap-2 rounded-full border border-purple-300/40 bg-purple-300/10 px-3 py-2 text-xs font-medium text-purple-100 hover:bg-purple-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="mt-3 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-brand hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                           Retry request
@@ -2253,15 +2200,13 @@ export default function FilmPulse() {
             </div>
 
             <form onSubmit={handleSubmit} className="flex gap-2 mt-4">
-              <div className="relative flex-grow">
-                <Input
-                  ref={inputRef}
-                  type="text"
+              <div className="relative min-w-0 flex-grow">
+                <MovieTitleInput
+                  inputRef={inputRef}
                   value={inputText}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setInputText(e.target.value)}
-                  placeholder="Enter movies you like..."
+                  onValueChange={setInputText}
                   disabled={isLoading}
-                  className="w-full bg-gray-700 border-gray-600 pr-12 text-white placeholder-gray-400 focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:border-pink-500 selection:bg-pink-500/40 selection:text-white"
+                  autocompleteEnabled={!isDictating && !isTranscribingDictation}
                 />
                 <button
                   type="button"
@@ -2272,8 +2217,8 @@ export default function FilmPulse() {
                   title={dictationTitle}
                   className={`absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border transition-colors ${
                     isDictating || isTranscribingDictation
-                      ? "border-pink-300/70 bg-pink-500/25 text-pink-100"
-                      : "border-gray-500/70 bg-gray-800/80 text-gray-300 hover:border-purple-300/70 hover:bg-purple-500/20 hover:text-white"
+                      ? "border-primary/70 bg-primary/25 text-brand"
+                      : "border-border/70 bg-card/80 text-secondary-foreground hover:border-primary/70 hover:bg-primary/20 hover:text-foreground"
                   } disabled:cursor-not-allowed disabled:opacity-45`}
                 >
                   {isTranscribingDictation ? (
@@ -2291,7 +2236,7 @@ export default function FilmPulse() {
               <Button
                 type="submit"
                 disabled={isLoading}
-                className="bg-gradient-to-r from-purple-400 to-pink-600 hover:from-purple-500 hover:to-pink-700 text-white"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
               </Button>
@@ -2300,7 +2245,7 @@ export default function FilmPulse() {
         </Card>
       </div>
 
-      <div className="mt-8 text-center text-gray-400 text-sm">
+      <div className="mt-8 text-center text-muted-foreground text-sm">
         <p>Powered by TMDB</p>
       </div>
 
@@ -2310,9 +2255,7 @@ export default function FilmPulse() {
             marginTop: "0",
             fontWeight: "bold",
             fontSize: "1rem",
-            background: "linear-gradient(to right, #c084fc, #db2777)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
+            color: "hsl(var(--brand))",
           }}
         >
           Presented by Thomas DeVito
@@ -2323,16 +2266,16 @@ export default function FilmPulse() {
             <WebsiteIcon />
           </a>
           <a href="https://x.com/thomasfdevito" target="_blank" rel="noopener noreferrer">
-            <FontAwesomeIcon icon={faTwitter} style={{ margin: "0 10px", fontSize: "24px", color: "white" }} />
+            <FontAwesomeIcon icon={faTwitter} style={{ margin: "0 10px", fontSize: "24px", color: "hsl(var(--foreground))" }} />
           </a>
           <a href="https://t.me/doubting_tom" target="_blank" rel="noopener noreferrer">
-            <FontAwesomeIcon icon={faTelegram} style={{ margin: "0 10px", fontSize: "24px", color: "white" }} />
+            <FontAwesomeIcon icon={faTelegram} style={{ margin: "0 10px", fontSize: "24px", color: "hsl(var(--foreground))" }} />
           </a>
           <a href="https://www.linkedin.com/in/tdevito" target="_blank" rel="noopener noreferrer">
-            <FontAwesomeIcon icon={faLinkedin} style={{ margin: "0 10px", fontSize: "24px", color: "white" }} />
+            <FontAwesomeIcon icon={faLinkedin} style={{ margin: "0 10px", fontSize: "24px", color: "hsl(var(--foreground))" }} />
           </a>
           <a href="https://github.com/tommyd2377" target="_blank" rel="noopener noreferrer">
-            <FontAwesomeIcon icon={faGithub} style={{ margin: "0 10px", fontSize: "24px", color: "white" }} />
+            <FontAwesomeIcon icon={faGithub} style={{ margin: "0 10px", fontSize: "24px", color: "hsl(var(--foreground))" }} />
           </a>
         </div>
         <br />
@@ -2342,7 +2285,7 @@ export default function FilmPulse() {
             fontFamily: "Arial, sans-serif",
             fontSize: "16px",
             textAlign: "center",
-            color: "white",
+            color: "hsl(var(--foreground))",
           }}
         >
           <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "0.25rem" }}>

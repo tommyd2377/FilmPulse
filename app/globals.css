@@ -4,35 +4,59 @@
 
 @layer base {
   :root {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    color-scheme: dark;
+    --background: 200.00 3.80% 15.49%;
+    --foreground: 60.00 18.52% 94.71%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 195.00 4.00% 19.61%;
+    --card-foreground: 60.00 18.52% 94.71%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 195.00 4.00% 19.61%;
+    --popover-foreground: 60.00 18.52% 94.71%;
 
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 87.77 50.21% 52.75%;
+    --brand: 87.77 50.21% 52.75%;
+    --primary-foreground: 91.58 42.22% 8.82%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 192.00 4.13% 23.73%;
+    --secondary-foreground: 97.50 9.30% 83.14%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 192.00 4.13% 23.73%;
+    --muted-foreground: 150.00 5.00% 76.47%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 192.00 4.13% 23.73%;
+    --accent-foreground: 60.00 18.52% 94.71%;
 
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --border: 145.71 3.95% 34.71%;
+    --input: 145.71 3.95% 34.71%;
+    --ring: 87.77 50.21% 52.75%;
 
     --radius: 0.5rem;
+  }
+
+  .light {
+    color-scheme: light;
+    --background: 90.00 7.14% 89.02%;
+    --foreground: 120.00 10.53% 14.90%;
+    --card: 75.00 20.00% 96.08%;
+    --card-foreground: 120.00 10.53% 14.90%;
+    --popover: 75.00 20.00% 96.08%;
+    --popover-foreground: 120.00 10.53% 14.90%;
+    --primary: 105.78 57.94% 45.69%;
+    --primary-foreground: 106.96 51.11% 8.82%;
+    --brand: 106.27 60.58% 26.86%;
+    --secondary: 96.00 12.82% 84.71%;
+    --secondary-foreground: 100.80 18.25% 26.86%;
+    --muted: 96.00 12.82% 84.71%;
+    --muted-foreground: 102.86 12.57% 32.75%;
+    --accent: 96.00 12.82% 84.71%;
+    --accent-foreground: 120.00 10.53% 14.90%;
+    --border: 102.00 10.31% 61.96%;
+    --input: 102.00 10.31% 61.96%;
+    --ring: 106.27 60.58% 26.86%;
   }
 }
 
@@ -51,16 +75,16 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-track {
-  background: #1f2937;
+  background: hsl(var(--card));
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background-color: #4b5563;
+  background-color: hsl(var(--border));
   border-radius: 3px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background-color: #6b7280;
+  background-color: hsl(var(--muted-foreground));
 }
 
 .filmpulse-slider {
@@ -68,7 +92,7 @@
   appearance: none;
   height: 0.5rem;
   border-radius: 9999px;
-  background: linear-gradient(to right, #c084fc, #db2777);
+  background: hsl(var(--primary));
   outline: none;
 }
 
@@ -77,24 +101,24 @@
   appearance: none;
   width: 1rem;
   height: 1rem;
-  border: 2px solid #ffffff;
+  border: 2px solid hsl(var(--foreground));
   border-radius: 9999px;
-  background: #db2777;
+  background: hsl(var(--primary));
   cursor: pointer;
 }
 
 .filmpulse-slider::-moz-range-track {
   height: 0.5rem;
   border-radius: 9999px;
-  background: linear-gradient(to right, #c084fc, #db2777);
+  background: hsl(var(--primary));
 }
 
 .filmpulse-slider::-moz-range-thumb {
   width: 1rem;
   height: 1rem;
-  border: 2px solid #ffffff;
+  border: 2px solid hsl(var(--foreground));
   border-radius: 9999px;
-  background: #db2777;
+  background: hsl(var(--primary));
   cursor: pointer;
 }
 
@@ -113,8 +137,23 @@
 .filmpulse-chat-markdown strong {
   display: inline-block;
   font-weight: 600;
-  color: transparent;
-  background: linear-gradient(to right, #c084fc, #db2777);
-  background-clip: text;
-  -webkit-background-clip: text;
+  color: hsl(var(--brand));
+}
+
+.filmpulse-chat-markdown [data-streamdown="strong"] {
+  color: hsl(var(--brand));
+}
+
+.filmpulse-user-message .filmpulse-chat-markdown strong,
+.filmpulse-user-message .filmpulse-chat-markdown [data-streamdown="strong"] {
+  color: inherit;
+}
+
+.light .filmpulse-header {
+  background: hsl(var(--primary));
+}
+
+.light .filmpulse-header h1,
+.light .filmpulse-header p {
+  color: hsl(var(--primary-foreground));
 }
