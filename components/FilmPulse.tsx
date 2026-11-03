@@ -1975,7 +1975,7 @@ export default function FilmPulse() {
 
   return (
     <div className="min-h-screen bg-background text-foreground pb-6">
-      <div className="w-full">
+      <div className="w-full lg:mx-auto lg:max-w-5xl">
         <div>
           <header className="filmpulse-header text-center mb-6 px-3 py-4 sm:px-6">
             <div className="mb-3 flex justify-end">
@@ -2081,7 +2081,7 @@ export default function FilmPulse() {
           </div>
         </div>
 
-        <Card className="rounded-none border-0 border-t border-border/70 bg-card shadow-none">
+        <Card className="rounded-none border-0 border-t border-border/70 bg-card shadow-none lg:mx-6 lg:rounded-xl lg:border">
           <CardContent className="p-3 sm:p-6">
             <div className="mb-3 flex justify-end">
               <button
