@@ -12,7 +12,7 @@ interface MovieMatch {
 }
 
 interface MovieTitleInputProps {
-  inputRef: RefObject<HTMLInputElement>
+  inputRef: RefObject<HTMLInputElement | null>
   value: string
   onValueChange: (value: string) => void
   disabled: boolean

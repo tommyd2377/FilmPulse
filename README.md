@@ -1,9 +1,40 @@
 # FilmPulse
 
-AI-powered film discovery companion built on Next.js 14 that curates indie gems, international standouts, and blockbuster crowd-pleasers through a conversational UX.
+Film discovery built on Next.js 16 and React 19: choose your streaming services, pick a favorite from a poster grid, and explore more movies like it. Anonymous positive picks and on-demand streaming availability provide the foundation for shared recommendations.
 
-## Overview
-- `app/page.tsx` renders the `FilmPulse` chat interface.
+## Local poster-grid discovery
+
+- Choose theaters or at home, select services and pick one favorite from a six-poster grid. Two thumbs up and double tap have the same positive action. Other films stay neutral; undo reverses the last pick.
+- All featured services work through the same on-demand TMDB path. “Find another service” searches additional providers available in the chosen country, including free/ad-supported streaming. Rent/buy remain a separate opt-in.
+- Requested movie pages are cached in server memory for 15 minutes; provider lists for 12 hours. Further browsing fetches more pages. There is no bulk catalog import, refresh worker or background scan.
+- Follow-up batches come from the chosen film's direct recommendation/similar lists and specific plot-keyword matches, ranked using all earlier saved picks. Each match is checked against exact regional streaming offers. Short batches are explained rather than filled with unrelated popular films.
+- Posters come from TMDB. Only offered films, anonymous rounds and favorites are saved to **local Supabase Postgres**. Existing sample catalogs remain as legacy local data and are ignored by browsing.
+- The poster-first layout has clear borders, compact viewing controls, reduced-motion support, and the earlier green light-mode header.
+- The hosted FilmPulse Supabase project has its schema installed, anonymous sign-ins enabled and Preview/Production settings configured. A bounded hosted check verified browsing, real posters, saved picks and undo. The old Firebase project is untouched. The old AI chat routes remain in source but the poster-grid flow does not call them.
+
+```sh
+npm run db:local
+npm run dev -- --hostname 127.0.0.1 --port 3100
+```
+
+`db:local` starts the project-scoped native Supabase stack and applies the local schema. It requires a supported Apple Silicon Mac; its first run downloads the CLI's native service binaries. Local test credentials remain in CLI state/server memory. Existing JSON preview favorites are preserved. Browsing uses the already-configured server TMDB development credential; it never displays or changes it.
+
+```sh
+npm run typecheck
+npm run test:discovery
+npm run test:discovery:db
+```
+
+Tests use mocked TMDB pages and local synthetic SQL fixtures, without external APIs. See [discovery backend documentation](docs/discovery-backend.md) for setup, source coverage, caching and verification limits.
+
+## Protected preview
+
+The existing Vercel project protects preview deployments with Vercel Authentication. Hosted discovery is configured through server-only Supabase variables. Local database/runtime state and environment files are excluded from uploads. Supabase is linked to the FilmPulse GitHub repository with automatic database deployments disabled. See [preview and backend setup](docs/protected-preview.md).
+
+The upgrade pins Next.js 16.4.5, React 19.3.1 and the matching React types. Webpack remains the build path. TypeScript errors fail the build; Next.js 16 removed the previous `next lint` command, and this repository has no standalone ESLint setup.
+
+## Retained conversational API
+- `components/FilmPulse.tsx` retains the prior chat interface; `app/page.tsx` now renders `FilmDiscovery`.
 - On a curation-cache miss, one streamed GPT-6.1 Sol **Responses API** call in `app/api/getRecommendation/route.ts` interprets the request, distinguishes recommendations from conversation or clarification, and supplies ordered film choices with concise reasons.
 - Recommendations resolve to TMDB records before display. Minimum/maximum runtime, release-year, original-language, required/excluded-genre, and viewing filters are checked against metadata, and previous picks are excluded from new rounds. A film with an excluded genre remains ineligible even when it also has allowed genres.
 - Completed film choices are checked against TMDB while the model continues. Verified cards arrive progressively over SSE; questions about existing picks and clarification requests return text without a new batch of cards.
@@ -128,6 +159,6 @@ npm run dev
 - The curator assesses overall tone, pacing, emotional intensity, and emotional aftertaste separately. All four model checks must pass, the experience fit must be strong, and no mood violations may be listed. These are internal model assessments, not verified metadata or guarantees of a viewer's experience; missing or partial assessments are rejected.
 - Explicit content exclusions are checked separately from genre and mood. Sexual-violence avoidance includes coercion, threats, exploitation and material implied/off-screen or referenced incidents; a non-graphic description is not enough to qualify. The curator must omit uncertain matches.
 - `lib/openai-response-stream.ts` owns the OpenAI stream's single reader. It requires an explicit completed response and handles premature EOF, API failures, cancellation, and a request deadline as errors, with stream cleanup and no automatic retry.
-- Session feedback is not persisted yet. Real cross-user "people who liked this also liked" signals should be added with a database-backed feedback table in a later pass.
+- The retained chat interface still has session-only feedback. The new poster-grid flow persists anonymous favorites in Supabase; collaborative ranking is a later pass.
 
 Have ideas or spot a great film pairing? Open an issue or reach out at [@thomasfdevito](https://x.com/thomasfdevito).

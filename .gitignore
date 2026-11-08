@@ -31,3 +31,4 @@ coverage/
 .DS_Store
 .vscode/
 .vercel
+.filmpulse-data/

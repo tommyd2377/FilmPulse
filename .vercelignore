@@ -6,3 +6,10 @@ logs/
 coverage/
 build/
 out/
+
+# Local Supabase runtime, generated test credentials and database files
+.filmpulse-data/
+supabase/.temp/
+supabase/.branches/
+supabase/.link.json
+supabase/.supabase.lock*

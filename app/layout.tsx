@@ -9,7 +9,7 @@ const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "FilmPulse",
-  description: "Discover hidden gems and international cinema with AI-powered film recommendations",
+  description: "Pick your favorite, explore more like it, and find your next movie on the services you watch.",
   generator: 'v0.dev',
   applicationName: "FilmPulse",
   appleWebApp: { capable: true, title: "FilmPulse" },

@@ -1,9 +1,12 @@
-import FilmPulse from "@/components/FilmPulse"
+import FilmDiscovery from "@/components/film-discovery"
+import { dataMode } from "@/lib/discovery/store"
+
+export const dynamic = "force-dynamic"
 
 export default function Home() {
   return (
     <main className="min-h-screen bg-background">
-      <FilmPulse />
+      <FilmDiscovery mode={dataMode()} />
     </main>
   )
 }
