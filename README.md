@@ -5,6 +5,8 @@ Film discovery built on Next.js 16 and React 19: choose your streaming services,
 ## Local poster-grid discovery
 
 - Choose theaters or at home, select services and pick one favorite from a six-poster grid. Two thumbs up and double tap have the same positive action. Other films stay neutral; undo reverses the last pick.
+- Search for a starting movie beside “Browse a mix,” before setup or above the posters. Results include years to distinguish titles; choosing one starts related recommendations within the selected viewing filters. Search sets a direction without creating a favorite.
+- Refresh and “Browse a mix” advance through the visitor’s saved catalog cursor, avoid recently shown films, and balance services and genres. “Reset” clears that visitor’s saved picks and browsing trail after confirmation, keeping streaming services and region selected.
 - All featured services work through the same on-demand TMDB path. “Find another service” searches additional providers available in the chosen country, including free/ad-supported streaming. Rent/buy remain a separate opt-in.
 - Requested movie pages are cached in server memory for 15 minutes; provider lists for 12 hours. Further browsing fetches more pages. There is no bulk catalog import, refresh worker or background scan.
 - Follow-up batches come from the chosen film's direct recommendation/similar lists and specific plot-keyword matches, ranked using all earlier saved picks. Each match is checked against exact regional streaming offers. Short batches are explained rather than filled with unrelated popular films.

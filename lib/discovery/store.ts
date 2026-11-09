@@ -1,10 +1,12 @@
-import type { CatalogManifest, CatalogMovie, CatalogSnapshot, DataMode, DiscoveryMovie, DiscoveryRound, Favorite, GuestTaste } from "./types"
+import type { BrowseContext, CatalogManifest, CatalogMovie, CatalogSnapshot, DataMode, DiscoveryMovie, DiscoveryRound, Favorite, GuestTaste } from "./types"
 import { getSupabaseConnection } from "./local-supabase"
 import { createSupabaseStore } from "./supabase-store"
 
 export interface DiscoveryStore {
   getCatalog(key: string): Promise<CatalogManifest | null>
   getTaste(uid: string): Promise<GuestTaste>
+  getBrowseContext(uid: string, key: string): Promise<BrowseContext>
+  resetTaste(uid: string): Promise<void>
   getFavorite(uid: string, movieId: number): Promise<Favorite | null>
   getCandidates(keys: string[], seed: CatalogMovie | null, salt: string): Promise<DiscoveryMovie[]>
   takeQuota(uid: string, minute: number): Promise<void>

@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js"
 import { DiscoveryError } from "./errors"
 import { getSupabaseConnection, type SupabaseConnection } from "./local-supabase"
-import { serviceLabel, type CatalogManifest, type CatalogMovie, type CatalogSnapshot, type DiscoveryMovie, type DiscoveryRound, type Favorite, type GuestTaste } from "./types"
+import { serviceLabel, type BrowseContext, type CatalogManifest, type CatalogMovie, type CatalogSnapshot, type DiscoveryMovie, type DiscoveryRound, type Favorite, type GuestTaste } from "./types"
 import type { DiscoveryStore } from "./store"
 
 export function supabaseClient(connection: SupabaseConnection, privileged = false) {
@@ -29,6 +29,8 @@ export function createSupabaseStore(connection: SupabaseConnection): DiscoverySt
   return {
     getCatalog: key => call<CatalogManifest | null>("catalog_get", { key }),
     getTaste: uid => call<GuestTaste>("taste_get", { uid }),
+    getBrowseContext: (uid, key) => call<BrowseContext>("browse_context", { uid, key }),
+    async resetTaste(uid) { await call("reset_taste", { uid }) },
     getFavorite: (uid, movieId) => call<Favorite | null>("favorite_get", { uid, movieId }),
     async getCandidates(keys, seed, salt) {
       const rows = await call<{ movie: CatalogMovie; services: string[]; sample: boolean }[]>("catalog_candidates", { keys, genres: seed?.genreIds ?? [], salt })

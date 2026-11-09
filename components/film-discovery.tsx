@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
-import { ArrowLeft, Check, ChevronRight, Film, Loader2, RotateCcw, SlidersHorizontal, Sofa, Sparkles, ThumbsUp, Ticket } from "lucide-react"
+import { ArrowLeft, Check, ChevronRight, Film, Grid2X2, Loader2, RotateCcw, SlidersHorizontal, Sofa, Sparkles, ThumbsUp, Ticket } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { FilmFooter } from "@/components/film-footer"
+import { DiscoveryMovieSearch, type StartingMovie } from "@/components/discovery-movie-search"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 import { discoveryHeaders } from "@/lib/discovery/client-auth"
 import { GENRE_NAMES, STREAMING_SERVICES, isServiceKey, serviceLabel, type DataMode, type DiscoveryMovie, type DiscoveryRound, type ServiceOption, type WatchPreferences } from "@/lib/discovery/types"
 
@@ -48,10 +50,14 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
   const reduceMotion = useReducedMotion() === true
   const [screen, setScreen] = useState<"welcome" | "services" | "browse">("welcome")
   const [preferences, setPreferences] = useState(defaultPreferences)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [startingMovie, setStartingMovie] = useState<StartingMovie | null>(null)
   const [round, setRound] = useState<DiscoveryRound | null>(null)
   const [trail, setTrail] = useState<TrailEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetError, setResetError] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
   const [pendingSeed, setPendingSeed] = useState<number | null | undefined>(undefined)
   const [pendingPick, setPendingPick] = useState<DiscoveryMovie | null>(null)
@@ -70,7 +76,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
   const gridRef = useCallback((node: HTMLDivElement | null) => {
     if (!node || !scrollToNext.current) return
     scrollToNext.current = false
-    node.parentElement?.scrollIntoView({ block: "start", behavior: "instant" })
+    window.scrollTo({ top: 0, behavior: "instant" })
   }, [])
 
   async function request<T>(path: string, body: unknown, method = "POST"): Promise<T> {
@@ -83,8 +89,8 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
     return payload as T
   }
 
-  async function loadRound(nextPreferences: WatchPreferences, seedId: number | null, excludeIds: number[] = [], moveToResults = true) {
-    const next = await request<DiscoveryRound>("rounds", { preferences: nextPreferences, seedId, excludeIds: excludeIds.slice(-300), previousRoundId: moveToResults ? round?.id ?? null : null })
+  async function loadRound(nextPreferences: WatchPreferences, seedId: number | null, excludeIds: number[] = [], moveToResults = true, startingMovieId?: number) {
+    const next = await request<DiscoveryRound>("rounds", { preferences: nextPreferences, seedId, ...(startingMovieId ? { startingMovieId } : {}), excludeIds: excludeIds.slice(-300), previousRoundId: moveToResults ? round?.id ?? null : null })
     scrollToNext.current = moveToResults
     setRound(next)
     setPendingSeed(undefined)
@@ -92,15 +98,51 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
     return next
   }
 
-  async function start(nextPreferences: WatchPreferences) {
+  async function start(nextPreferences: WatchPreferences, movie = startingMovie) {
     if (inFlight.current) return
-    inFlight.current = true; setBusy(true); setError(null); setScreen("browse"); setRound(null); setTrail([]); setPendingSeed(null); setPendingPick(null)
+    inFlight.current = true; setBusy(true); setError(null); setScreen("browse"); setRound(null); setTrail([]); setPendingSeed(null); setPendingPick(null); setStartingMovie(movie)
     try {
-      await loadRound(nextPreferences, null, [], false)
+      await loadRound(nextPreferences, null, [], false, movie?.id)
       setTrail([])
       try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify(nextPreferences)) } catch {}
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Your movies could not be loaded."); setPendingSeed(null) }
     finally { inFlight.current = false; setBusy(false) }
+  }
+
+  function chooseStartingMovie(movie: StartingMovie) {
+    setStartingMovie(movie)
+    if (hasViewingOptions(preferences)) void start(preferences, movie)
+    else setAnnouncement(`Starting with ${movie.title}. Choose where you are watching to find related movies.`)
+  }
+
+  function hasViewingOptions(next: WatchPreferences) {
+    return next.mode === "theaters" || ((next.services.length > 0 || next.includeRentals) && next.services.length <= 20)
+  }
+
+  function browseMix() {
+    setStartingMovie(null); setSearchQuery("")
+    if (hasViewingOptions(preferences)) void start(preferences, null)
+    else setAnnouncement("Choose your viewing options to find a starting mix.")
+  }
+
+  async function resetTaste() {
+    if (inFlight.current) return
+    inFlight.current = true; setBusy(true); setResetError(null)
+    let cleared = false
+    try {
+      await request("reset", {})
+      cleared = true
+      setRound(null); setTrail([]); setSearchQuery(""); setStartingMovie(null); setPendingSeed(null); setPendingPick(null); setError(null); setResetOpen(false)
+      setAnnouncement("Your saved picks and browsing trail were cleared. Starting fresh.")
+      if (hasViewingOptions(preferences)) {
+        setScreen("browse")
+        await loadRound(preferences, null, round?.movies.map(movie => movie.tmdbId), false)
+      } else setScreen("welcome")
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : "Your taste could not be reset. Please try again."
+      if (cleared) setError(message)
+      else setResetError(message)
+    } finally { inFlight.current = false; setBusy(false) }
   }
 
   useEffect(() => {
@@ -125,6 +167,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
     try {
       await request("picks", { roundId: previous.id, movieId: movie.tmdbId })
       saved = true
+      setStartingMovie(null); setSearchQuery("")
       setRound({ ...previous, selectedId: movie.tmdbId })
       setTrail(history => [...history, { round: previous, movie }].slice(-20))
       setPendingSeed(movie.tmdbId)
@@ -134,6 +177,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
   }
 
   async function anotherMix() {
+    if (!round && startingMovie) { await start(preferences, startingMovie); return }
     if (inFlight.current) return
     inFlight.current = true; setBusy(true); setError(null)
     const seed = pendingSeed !== undefined ? pendingSeed : round?.seed?.tmdbId ?? null
@@ -189,8 +233,21 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
     <div className={`discovery-root mx-auto max-w-[1600px] px-4 pb-6 sm:px-7 lg:px-10 ${screen === "browse" ? "is-browsing" : ""}`}>
       <header className="discovery-header flex items-center justify-between gap-4">
         <div className="flex items-center gap-2.5"><img src="/filmpulse-icon.svg" alt="" className="h-9 w-9" /><h1 className="text-2xl font-bold tracking-tight text-brand">FilmPulse</h1></div>
-        <div className="flex items-center gap-4"><span className="discovery-tagline hidden text-xs font-medium tracking-wide text-muted-foreground sm:inline">Find your next favorite.</span><ThemeToggle /></div>
+        <div className="flex items-center gap-2 sm:gap-4"><span className="discovery-tagline hidden text-xs font-medium tracking-wide text-muted-foreground sm:inline">Find your next favorite.</span>
+          <AlertDialog open={resetOpen} onOpenChange={open => { if (!busy) { setResetOpen(open); setResetError(null) } }}>
+            <AlertDialogTrigger asChild><button type="button" className="discovery-text-link inline-flex items-center gap-1.5" aria-label="Reset my taste" disabled={busy || servicesBusy || mode === "unconfigured"}><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />Reset</button></AlertDialogTrigger>
+            <AlertDialogContent className="w-[calc(100%-2rem)] rounded-xl">
+              <AlertDialogHeader><AlertDialogTitle>Reset your taste?</AlertDialogTitle><AlertDialogDescription>This clears your saved picks and browsing trail. Your streaming services and watch region stay selected.</AlertDialogDescription></AlertDialogHeader>
+              {resetError && <p role="alert" className="text-sm">{resetError}</p>}
+              <AlertDialogFooter><AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel><AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); void resetTaste() }}>{busy ? "Resetting…" : "Reset my taste"}</AlertDialogAction></AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <ThemeToggle /></div>
       </header>
+      <div className="discovery-start-bar" aria-label="Choose how to start">
+        <DiscoveryMovieSearch value={searchQuery} onValueChange={value => { setSearchQuery(value); setStartingMovie(null) }} onSelect={chooseStartingMovie} disabled={busy || servicesBusy || mode === "unconfigured"} />
+        <button type="button" className="discovery-secondary discovery-browse-mix" disabled={busy || servicesBusy || mode === "unconfigured"} onClick={browseMix}><Grid2X2 className="h-4 w-4 shrink-0" aria-hidden="true" />Browse a mix</button>
+      </div>
       <div className="sr-only" role="status" aria-live="polite">{announcement}</div>
       {mode === "unconfigured" && <p role="alert" className="discovery-notice mt-5 text-sm">Movie discovery is not connected yet.</p>}
 
@@ -200,7 +257,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
             <div className="discovery-setup-intro">
               <p className="discovery-eyebrow"><span aria-hidden="true" /> Welcome to FilmPulse</p>
               <h2 className="discovery-heading">How are you<br className="hidden sm:block" /> watching?</h2>
-              <p className="discovery-lead">A great movie is a few good picks away.</p>
+              <p className="discovery-lead">{startingMovie ? `Choose where to find movies like ${startingMovie.title}.` : "Search a movie you like, or browse a starting mix."}</p>
               <div className="discovery-intro-note"><Sparkles className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" /><span>Choose a favorite. Explore more like it. Find your movie.</span></div>
               <p className="discovery-privacy">No profiles. No sign-up. Just your taste.</p>
               {round && <button type="button" onClick={() => setScreen("browse")} className="discovery-text-link mt-3">Back to your movies</button>}
@@ -223,7 +280,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
               <button type="button" disabled={servicesBusy} onClick={() => setScreen("welcome")} className="discovery-back"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Viewing options</button>
               <p className="discovery-eyebrow"><span aria-hidden="true" /> At home</p>
               <h2 className="discovery-heading">What’s on<br className="hidden sm:block" /> your screen?</h2>
-              <p className="discovery-lead">Choose your services. We’ll start there.</p>
+              <p className="discovery-lead">{startingMovie ? `Find movies like ${startingMovie.title} on your services.` : "Choose your services. We’ll start there."}</p>
               <div className="discovery-intro-note"><Sparkles className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" /><span>You can change your services whenever you like.</span></div>
               <p className="discovery-privacy">No streaming-account connection needed.</p>
             </div>
@@ -240,7 +297,7 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
                 <label className="discovery-region">Watch region<select disabled={servicesBusy} value={preferences.region} onChange={event => { setPreferences({ ...preferences, region: event.target.value }); setProviderOptions([]); setMoreServices(false); setServiceQuery(""); setServicesError(null) }}><option value="US">United States</option><option value="CA">Canada</option><option value="GB">United Kingdom</option><option value="AU">Australia</option></select></label>
               </div>
               {preferences.services.length > 20 && <p role="alert" className="mb-3 text-sm">Choose up to 20 services for one mix.</p>}
-              <button type="button" disabled={!canStart || busy || servicesBusy} onClick={() => void start(preferences)} className="discovery-primary w-full">Find my starting mix<ChevronRight className="h-4 w-4" aria-hidden="true" /></button>
+              <button type="button" disabled={!canStart || busy || servicesBusy} onClick={() => void start(preferences)} className="discovery-primary w-full">{startingMovie ? `Find movies like ${startingMovie.title}` : "Find my starting mix"}<ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" /></button>
             </div>
           </motion.section>
         ) : (

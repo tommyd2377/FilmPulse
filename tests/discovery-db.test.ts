@@ -8,7 +8,8 @@ import { CATALOG_MAX_AGE_MS } from "../lib/discovery/catalog"
 import { buildSnapshot } from "../lib/discovery/catalog"
 import { getLocalSupabaseConnection } from "../lib/discovery/local-supabase"
 import { createSupabaseStore, getAnonymousSession, supabaseClient } from "../lib/discovery/supabase-store"
-import { createRound, pickFavorite, undoFavorite } from "../lib/discovery/service"
+import { createRound, pickFavorite, resetDiscovery, undoFavorite } from "../lib/discovery/service"
+import { browseKey } from "../lib/discovery/on-demand"
 import { publishSnapshot } from "../lib/discovery/store"
 import { SAMPLE_MOVIES } from "../lib/discovery/sample"
 import { importLegacyPreview, prepareLocalDatabase } from "../scripts/local-supabase"
@@ -156,6 +157,42 @@ test("local Supabase discovery integration", async t => {
       assert.ok(await store.getFavorite(uid, id))
       await db.query("update film_discovery.rounds set expires_at = now() - interval '1 hour' where round_id = $1", [second.id])
       await assert.rejects(pickFavorite(store, uid, second.id, second.movies[0].tmdbId), /expired/)
+    })
+
+    await t.test("fresh browsing survives reconnects, and reset clears only its owner and rejects stale work", async () => {
+      const uid = guest(), stranger = guest(), key = browseKey(preferences, null)
+      const first = await round(uid), second = await round(uid), other = await round(stranger)
+      assert.equal(second.browse?.page, 2)
+      assert.ok(second.movies.every(movie => !first.movies.some(seen => seen.tmdbId === movie.tmdbId)))
+      const reconnected = createSupabaseStore(connection)
+      const context = await reconnected.getBrowseContext(uid, key)
+      assert.equal(context.page, 2)
+      assert.equal(context.seenIds.length, 12)
+      await pickFavorite(store, uid, first.id, first.movies[0].tmdbId)
+      await pickFavorite(store, stranger, other.id, other.movies[0].tmdbId)
+      const otherTaste = await store.getTaste(stranger)
+      const limits = (await db.query("select requests from film_discovery.round_limits where guest_id = $1", [uid])).rows[0].requests
+      await resetDiscovery(store, uid)
+      assert.deepEqual((await store.getTaste(uid)).favorites, [])
+      assert.deepEqual((await store.getTaste(uid)).history, [])
+      assert.equal((await store.getTaste(uid)).tasteVersion, 1)
+      assert.equal(await store.getRound(uid, first.id), null)
+      assert.deepEqual(await store.getBrowseContext(uid, key), { page: 0, seenIds: [] })
+      assert.deepEqual(await store.getTaste(stranger), otherTaste)
+      assert.ok(await store.getRound(stranger, other.id))
+      assert.ok((await db.query("select 1 from film_discovery.movies where movie_id = $1", [first.movies[0].tmdbId])).rowCount)
+      assert.equal((await db.query("select requests from film_discovery.round_limits where guest_id = $1", [uid])).rows[0].requests, limits + 1)
+      await assert.rejects(store.saveRound(uid, { ...second, id: randomUUID() }), /taste was reset/)
+      await assert.rejects(pickFavorite(store, uid, second.id, second.movies[0].tmdbId), /no longer available/)
+      await assert.rejects(undoFavorite(store, uid, first.id), /no longer available/)
+      const fresh = await round(uid)
+      assert.equal(fresh.tasteVersion, 1)
+      assert.equal(fresh.browse?.page, 1)
+      await pickFavorite(store, uid, fresh.id, fresh.movies[0].tmdbId)
+      assert.equal((await store.getTaste(uid)).favorites.length, 1)
+      await Promise.allSettled([pickFavorite(store, uid, fresh.id, fresh.movies[0].tmdbId), resetDiscovery(store, uid)])
+      assert.deepEqual((await store.getTaste(uid)).favorites, [])
+      assert.equal((await store.getTaste(uid)).tasteVersion, 2)
     })
 
     await t.test("guest throttles are transactional and reset in a new minute", async () => {

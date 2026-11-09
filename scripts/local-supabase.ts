@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readFile } from "node:fs/promises"
+import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { Client } from "pg"
@@ -52,13 +52,16 @@ export async function prepareLocalDatabase() {
   await client.connect()
   try {
     await client.query("begin")
-    const sql = await readFile(join(process.cwd(), "supabase", "migrations", "20261108175025_film_discovery.sql"), "utf8")
-    const version = `schema-${createHash("sha256").update(sql).digest("hex").slice(0, 16)}`
-    const exists = await client.query("select to_regclass('film_discovery.migrations') as name")
-    const applied = exists.rows[0]?.name ? await client.query("select 1 from film_discovery.migrations where name = $1", [version]) : { rowCount: 0 }
-    if (!applied.rowCount) {
-      await client.query(sql)
-      await client.query("insert into film_discovery.migrations(name) values ($1) on conflict do nothing", [version])
+    const directory = join(process.cwd(), "supabase", "migrations")
+    for (const filename of (await readdir(directory)).filter(name => name.endsWith(".sql")).sort()) {
+      const sql = await readFile(join(directory, filename), "utf8")
+      const version = `schema-${createHash("sha256").update(sql).digest("hex").slice(0, 16)}`
+      const exists = await client.query("select to_regclass('film_discovery.migrations') as name")
+      const applied = exists.rows[0]?.name ? await client.query("select 1 from film_discovery.migrations where name = $1", [version]) : { rowCount: 0 }
+      if (!applied.rowCount) {
+        await client.query(sql)
+        await client.query("insert into film_discovery.migrations(name) values ($1) on conflict do nothing", [version])
+      }
     }
     let migrated: { catalogs: number; favorites: number } | null = null
     const legacyApplied = await client.query("select 1 from film_discovery.migrations where name = 'legacy-json-v1'")

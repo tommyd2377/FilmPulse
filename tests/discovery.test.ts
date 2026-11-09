@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { browseKey, createOnDemandSource, createTmdbCache, type MovieSource } from "../lib/discovery/on-demand"
-import { createRound, roundRequestSchema } from "../lib/discovery/service"
-import { rankPersonalized, tasteAffinity } from "../lib/discovery/personalization"
+import { createRound, resetDiscovery, resetRequestSchema, roundRequestSchema } from "../lib/discovery/service"
+import { rankFreshMix, rankPersonalized, tasteAffinity } from "../lib/discovery/personalization"
 import { STREAMING_SERVICES, type CatalogMovie, type DiscoveryMovie, type DiscoveryRound, type WatchPreferences } from "../lib/discovery/types"
-import { parseTmdbPage } from "../lib/discovery/tmdb-source"
+import { parseTmdbMovie, parseTmdbPage } from "../lib/discovery/tmdb-source"
 import type { DiscoveryStore } from "../lib/discovery/store"
 
 const preferences: WatchPreferences = { mode: "home", services: ["prime"], region: "US", includeRentals: false }
@@ -105,7 +105,7 @@ test("page caches deduplicate concurrent requests, expire, and never retry failu
 test("rounds page forward through owned context, save only offered movies, and ignore legacy catalogs", async () => {
   const rounds = new Map<string, DiscoveryRound>(), pages: number[] = []
   const store = {
-    takeQuota: async () => {}, getTaste: async () => ({ favorites: [1] }), getFavorite: async () => null,
+    takeQuota: async () => {}, getBrowseContext: async () => ({ page: 0, seenIds: [] }), getTaste: async () => ({ favorites: [1] }), getFavorite: async () => null,
     getRound: async (uid: string, id: string) => uid === "owner" ? rounds.get(id) ?? null : null,
     saveRound: async (_uid: string, round: DiscoveryRound) => { rounds.set(round.id, round) },
     getCatalog: async () => { throw new Error("Legacy catalogs must not be read") },
@@ -124,6 +124,9 @@ test("rounds page forward through owned context, save only offered movies, and i
 })
 
 test("viewing choices, dynamic provider IDs and ownership inputs are validated", () => {
+  assert.equal(roundRequestSchema.safeParse({ preferences, tasteVersion: 99 }).success, false)
+  assert.equal(resetRequestSchema.safeParse({ uid: "somebody-else" }).success, false)
+  assert.equal(resetRequestSchema.safeParse({}).success, true)
   assert.equal(roundRequestSchema.safeParse({ preferences: { ...preferences, services: [] } }).success, false)
   assert.equal(roundRequestSchema.safeParse({ preferences, uid: "somebody-else" }).success, false)
   assert.equal(roundRequestSchema.safeParse({ preferences: { ...preferences, region: "../../" } }).success, false)
@@ -132,6 +135,71 @@ test("viewing choices, dynamic provider IDs and ownership inputs are validated",
   assert.equal(roundRequestSchema.safeParse({ preferences: { ...preferences, services: ["tmdb:0"] } }).success, false)
   assert.equal(roundRequestSchema.safeParse({ preferences: { ...preferences, services: ["invented"] } }).success, false)
   assert.equal(roundRequestSchema.safeParse({ preferences, history: [rawMovie(1)] }).success, false)
+  assert.equal(roundRequestSchema.safeParse({ preferences, startingMovieId: 10 }).success, true)
+  assert.equal(roundRequestSchema.safeParse({ preferences, startingMovieId: 0 }).success, false)
+  assert.equal(roundRequestSchema.safeParse({ preferences, startingMovieId: 10, seedId: 20 }).success, false)
+  assert.equal(roundRequestSchema.safeParse({ preferences, startingMovieId: 10, movie: rawMovie(10) }).success, false)
+})
+
+test("refreshes advance the saved catalog cursor and exclude recent exposures without a client round", async () => {
+  const saved: DiscoveryRound[] = [], pages: number[] = []
+  const store = {
+    takeQuota: async () => {}, getTaste: async () => ({ favorites: [], tasteVersion: 3 }),
+    getBrowseContext: async (uid: string, key: string) => {
+      assert.equal(uid, "owner")
+      return { page: saved.filter(round => round.browse?.key === key).at(-1)?.browse?.page ?? 0, seenIds: saved.flatMap(round => round.movies.map(movie => movie.tmdbId)) }
+    },
+    getRound: async () => saved[0],
+    saveRound: async (_uid: string, round: DiscoveryRound) => { saved.push(round) },
+  } as unknown as DiscoveryStore
+  const source: MovieSource = async (_preferences, _seed, page, excluded) => {
+    pages.push(page)
+    assert.ok(saved.flatMap(round => round.movies).every(movie => excluded.has(movie.tmdbId)))
+    return { movies: Array.from({ length: 30 }, (_, i) => relation(movie(100 + i), movie(1))), catalogs: [], missingCatalogs: [], page }
+  }
+  const input = { preferences, seedId: null, excludeIds: [] }
+  const first = await createRound(store, "owner", input, source)
+  const second = await createRound(store, "owner", input, source)
+  const third = await createRound(store, "owner", { ...input, previousRoundId: first.id }, source)
+  assert.deepEqual(pages, [1, 2, 3])
+  assert.equal(new Set([...first.movies, ...second.movies, ...third.movies].map(movie => movie.tmdbId)).size, 18)
+  assert.equal(third.tasteVersion, 3)
+})
+
+test("fresh mixes spread across services and genres despite a single-genre history", () => {
+  const genres = [27, 35, 878, 99, 10749, 16, 80, 37, 10402, 36]
+  const pool = genres.flatMap((genre, i) => Array.from({ length: 8 }, (_, j) => ({ ...relation(movie(i * 100 + j + 1), movie(9999)), genreIds: [genre], availableOn: [`Service ${i}`] })))
+  const history = Array.from({ length: 20 }, (_, i) => ({ ...movie(10000 + i), genreIds: [27] }))
+  const first = rankFreshMix(pool, history, new Set(), "first")
+  assert.equal(first.length, 6)
+  assert.equal(new Set(first.map(movie => movie.genreIds[0])).size, 6)
+  assert.equal(new Set(first.flatMap(movie => movie.availableOn)).size, 6)
+  assert.ok(first.filter(movie => movie.genreIds.includes(27)).length <= 1)
+  assert.deepEqual(rankFreshMix(pool, history, new Set(), "first"), first)
+  assert.notDeepEqual(rankFreshMix(pool, history, new Set(), "second").map(movie => movie.tmdbId), first.map(movie => movie.tmdbId))
+})
+
+test("when a small catalog repeats, unseen films keep their places before neutral repeats", async () => {
+  const candidates = Array.from({ length: 8 }, (_, i) => relation(movie(100 + i), movie(1)))
+  const store = {
+    takeQuota: async () => {}, getTaste: async () => ({ favorites: [100] }),
+    getBrowseContext: async () => ({ page: 1, seenIds: [101, 102, 103, 104, 105] }), saveRound: async () => {},
+  } as unknown as DiscoveryStore
+  const source: MovieSource = async (_p, _s, page) => ({ movies: candidates, catalogs: [], missingCatalogs: [], page })
+  const result = await createRound(store, "owner", { preferences, seedId: null, excludeIds: [] }, source)
+  assert.equal(result.movies.length, 6)
+  assert.deepEqual(new Set(result.movies.slice(0, 2).map(movie => movie.tmdbId)), new Set([106, 107]))
+  assert.ok(result.movies.every(movie => movie.tmdbId !== 100))
+})
+
+test("taste reset uses the verified guest and preserves throttling", async () => {
+  const calls: string[] = []
+  const store = { takeQuota: async (uid: string) => { calls.push(`quota:${uid}`) }, resetTaste: async (uid: string) => { calls.push(`reset:${uid}`) } } as unknown as DiscoveryStore
+  await resetDiscovery(store, "verified-guest")
+  assert.deepEqual(calls, ["quota:verified-guest", "reset:verified-guest"])
+  store.takeQuota = async () => { throw new Error("Take a moment") }
+  await assert.rejects(resetDiscovery(store, "verified-guest"), /Take a moment/)
+  assert.equal(calls.length, 2)
 })
 
 function movie(id: number, extra: Partial<CatalogMovie> = {}): CatalogMovie {
@@ -141,6 +209,61 @@ function relation(candidate: CatalogMovie, seed: CatalogMovie, rank = 0): Discov
   return { ...candidate, sample: false, availableOn: ["Prime Video"], reason: "", relations: [{ seedId: seed.tmdbId, seedTitle: seed.title, kind: "recommendation", rank }] }
 }
 function pageOf(ids: number[], page = 1) { return { page, total_pages: 1, total_results: ids.length, results: ids.map(rawMovie) } }
+
+test("starting-movie details use canonical genres and reject adult or malformed records", () => {
+  const details = { ...rawMovie(10), adult: false, genres: [{ id: 878, name: "Science Fiction" }], overview: "An astronaut explores distant planets." }
+  const parsed = parseTmdbMovie(details)
+  assert.equal(parsed.tmdbId, 10)
+  assert.deepEqual(parsed.genreIds, [878])
+  assert.equal(parsed.releaseYear, 2026)
+  assert.equal(parsed.posterPath, "/poster.jpg")
+  assert.throws(() => parseTmdbMovie({ ...details, adult: true }))
+  assert.throws(() => parseTmdbMovie({ ...details, genres: [{ id: "invalid" }] }))
+})
+
+test("searched titles start related rounds without an implicit favorite and keep the guest's earlier taste", async () => {
+  const searched = movie(10, { genreIds: [878] }), earlier = movie(20, { genreIds: [878] })
+  const rounds = new Map<string, DiscoveryRound>(), observedPages: number[] = []
+  let lookups = 0, writes = 0, quota = 0
+  const store = {
+    takeQuota: async () => { quota++ },
+    getTaste: async (uid: string) => uid === "owner" ? { favorites: [20], history: [{ movie: earlier, createdAt: "2026-11-09" }] } : { favorites: [], history: [] },
+    getFavorite: async () => null,
+    getRound: async (uid: string, id: string) => uid === "owner" ? rounds.get(id) ?? null : null,
+    saveRound: async (_uid: string, round: DiscoveryRound) => { rounds.set(round.id, round) },
+    pick: async () => { writes++ },
+  } as unknown as DiscoveryStore
+  const resolve = async (id: number) => { assert.ok(quota > 0, "Rate limiting happens before the movie lookup"); assert.equal(id, searched.tmdbId); lookups++; return searched }
+  const source: MovieSource = async (watch, seed, page, _excluded, history) => {
+    assert.deepEqual(watch, preferences)
+    assert.equal(seed?.tmdbId, searched.tmdbId)
+    assert.deepEqual(history?.map(movie => movie.tmdbId), [20])
+    observedPages.push(page)
+    return { movies: [relation(movie(101, { genreIds: [878] }), searched)], catalogs: [], missingCatalogs: [], page }
+  }
+  const first = await createRound(store, "owner", { preferences, seedId: null, startingMovieId: 10, excludeIds: [] }, source, resolve)
+  assert.equal(first.seed?.tmdbId, 10)
+  assert.equal(first.movies[0].tmdbId, 101)
+  assert.equal(first.selectedId, null)
+  assert.equal(writes, 0, "Choosing a search result must not create a favorite")
+  await createRound(store, "owner", { preferences, seedId: 10, previousRoundId: first.id, excludeIds: [] }, source, resolve)
+  assert.deepEqual(observedPages, [1, 2])
+  assert.equal(lookups, 1, "Later mixes reuse the seed from an owned round")
+  await assert.rejects(createRound(store, "owner", { preferences, seedId: 999, previousRoundId: first.id, excludeIds: [] }, source, resolve), /Choose a favorite/)
+  await assert.rejects(createRound(store, "stranger", { preferences, seedId: 10, previousRoundId: first.id, excludeIds: [] }, source, resolve), /no longer available/)
+  await assert.rejects(createRound(store, "stranger", { preferences, seedId: null, startingMovieId: 10, previousRoundId: first.id, excludeIds: [] }, source, resolve), /no longer available/)
+  assert.equal(lookups, 1)
+  assert.equal(writes, 0)
+})
+
+test("a failed starting-movie lookup does not fall back to popular films or save a round", async () => {
+  let saved = 0, requested = 0
+  const store = { takeQuota: async () => {}, getBrowseContext: async () => ({ page: 0, seenIds: [] }), getTaste: async () => ({ favorites: [] }), saveRound: async () => { saved++ } } as unknown as DiscoveryStore
+  const source: MovieSource = async () => { requested++; throw new Error("Unexpected fallback") }
+  await assert.rejects(createRound(store, "owner", { preferences, seedId: null, startingMovieId: 10, excludeIds: [] }, source, async () => { throw new Error("Movie unavailable") }), /Movie unavailable/)
+  assert.equal(requested, 0)
+  assert.equal(saved, 0)
+})
 
 test("different picked movies with identical genres produce different related batches, never generic popular substitutes", async () => {
   const calls: string[] = []
@@ -242,7 +365,7 @@ test("a fresh mix uses the verified guest's saved history without trapping them 
   const recent = movie(10), earlier = movie(20), offered = relation(movie(101), recent)
   let supplied: CatalogMovie[] = []
   const store = {
-    takeQuota: async () => {},
+    takeQuota: async () => {}, getBrowseContext: async () => ({ page: 0, seenIds: [] }),
     getTaste: async (uid: string) => { assert.equal(uid, "owner"); return { favorites: [10, 20], history: [{ movie: recent, createdAt: "2026-11-08" }, { movie: earlier, createdAt: "2026-11-07" }] } },
     saveRound: async () => {},
   } as unknown as DiscoveryStore

@@ -10,12 +10,24 @@ const movieSchema = z.object({
   vote_average: z.number().finite().min(0).max(10), vote_count: z.number().int().nonnegative(), original_language: z.string().max(10),
 })
 const pageSchema = z.object({ page: z.number().int().positive(), total_pages: z.number().int().nonnegative(), total_results: z.number().int().nonnegative(), results: z.array(movieSchema).max(20) })
+const detailsSchema = movieSchema.omit({ genre_ids: true }).extend({
+  adult: z.literal(false), genres: z.array(z.object({ id: z.number().int().positive() })).max(25),
+})
 
-export function parseTmdbPage(payload: unknown): CatalogPage {
-  const page = pageSchema.parse(payload)
-  return { page: page.page, totalPages: page.total_pages, totalResults: page.total_results, movies: page.results.map(movie => ({
+function catalogMovie(movie: z.infer<typeof movieSchema>): CatalogMovie {
+  return {
     tmdbId: movie.id, title: movie.title, releaseYear: /^\d{4}-/.test(movie.release_date) ? Number(movie.release_date.slice(0, 4)) : null,
     posterPath: movie.poster_path ?? null, overview: movie.overview.slice(0, 1600), genreIds: movie.genre_ids,
     popularity: movie.popularity, voteAverage: movie.vote_average, voteCount: movie.vote_count, originalLanguage: movie.original_language,
-  })) }
+  }
+}
+
+export function parseTmdbPage(payload: unknown): CatalogPage {
+  const page = pageSchema.parse(payload)
+  return { page: page.page, totalPages: page.total_pages, totalResults: page.total_results, movies: page.results.map(catalogMovie) }
+}
+
+export function parseTmdbMovie(payload: unknown): CatalogMovie {
+  const movie = detailsSchema.parse(payload)
+  return catalogMovie({ ...movie, genre_ids: movie.genres.map(genre => genre.id) })
 }

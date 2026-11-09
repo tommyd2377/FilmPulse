@@ -80,10 +80,12 @@ export type DiscoveryRound = {
   selectedId: number | null
   voteCreated: boolean
   browse?: { key: string; page: number }
+  tasteVersion?: number
 }
 
 export type Favorite = { movie: CatalogMovie; roundId: string; createdAt: string }
-export type GuestTaste = { favorites: number[]; history?: { movie: CatalogMovie; createdAt: string }[] }
+export type GuestTaste = { favorites: number[]; history?: { movie: CatalogMovie; createdAt: string }[]; tasteVersion?: number }
+export type BrowseContext = { page: number; seenIds: number[] }
 
 export const GENRE_NAMES: Record<number, string> = {
   28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",

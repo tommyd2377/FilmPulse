@@ -90,3 +90,26 @@ export function rankPersonalized(candidates: DiscoveryMovie[], seed: CatalogMovi
     .sort((a, b) => b.score - a.score || b.relationScore - a.relationScore || a.movie.tmdbId - b.movie.tmdbId)
     .slice(0, count).map(entry => entry.movie)
 }
+
+/** Fresh mixes explore beyond saved taste and share space across services and genres. */
+export function rankFreshMix(candidates: DiscoveryMovie[], history: CatalogMovie[], excluded: Set<number>, nonce: string, count = 6): DiscoveryMovie[] {
+  const pool = rankPersonalized(candidates, null, history, excluded, candidates.length)
+  const chosen: DiscoveryMovie[] = [], services = new Set<string>(), genres = new Map<number, number>()
+  const scores = new Map(pool.map(movie => {
+    let hash = 2166136261
+    for (const char of `${nonce}:${movie.tmdbId}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
+    return [movie.tmdbId, (hash >>> 0) / 4294967296 * .8 + tasteAffinity(movie, history) * .35 + movie.voteAverage * movie.voteCount / (movie.voteCount + 100) / 10 * .2]
+  }))
+  while (pool.length && chosen.length < count) {
+    const score = (movie: DiscoveryMovie) => {
+      const genre = anchorGenre(movie), repeats = genre === undefined ? 0 : genres.get(genre) ?? 0
+      return scores.get(movie.tmdbId)! + (movie.availableOn.some(service => !services.has(service)) ? .9 : 0) + (genre !== undefined && !repeats ? .65 : 0) - repeats * .65
+    }
+    pool.sort((a, b) => score(b) - score(a) || a.tmdbId - b.tmdbId)
+    const movie = pool.shift()!, genre = anchorGenre(movie)
+    chosen.push({ ...movie, reason: "A fresh mix from your viewing options." })
+    movie.availableOn.forEach(service => services.add(service))
+    if (genre !== undefined) genres.set(genre, (genres.get(genre) ?? 0) + 1)
+  }
+  return chosen
+}

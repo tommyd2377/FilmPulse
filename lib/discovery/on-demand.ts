@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { DiscoveryError } from "./errors"
-import { parseTmdbPage, type CatalogPage } from "./tmdb-source"
+import { parseTmdbMovie, parseTmdbPage, type CatalogPage } from "./tmdb-source"
 import { anchorGenre, rankPersonalized, representativePicks } from "./personalization"
 import { catalogKey, STREAMING_SERVICES, type CatalogMovie, type DiscoveryMovie, type DiscoveryRound, type MovieRelation, type ServiceOption, type WatchPreferences } from "./types"
 
@@ -210,6 +210,7 @@ async function requestTmdb(path: string, params: Record<string, string>): Promis
     if (path === "/watch/providers/movie") providersSchema.parse(payload)
     else if (path.endsWith("/watch/providers")) availabilitySchema.parse(payload)
     else if (path.endsWith("/keywords")) keywordsSchema.parse(payload)
+    else if (/^\/movie\/\d+$/.test(path)) parseTmdbMovie(payload)
     else parseTmdbPage(payload)
     return payload
   } catch { throw new DiscoveryError("Movie availability returned incomplete data. Please try again.", 503) }
@@ -217,6 +218,13 @@ async function requestTmdb(path: string, params: Record<string, string>): Promis
 
 const cachedTmdbRequest = createTmdbCache(requestTmdb)
 export const onDemandMovies = createOnDemandSource(requestTmdb, cachedTmdbRequest)
+
+export async function startingMovie(id: number): Promise<CatalogMovie> {
+  const response = await cachedTmdbRequest(`/movie/${id}`, { language: "en-US" })
+  const movie = parseTmdbMovie(response.data)
+  if (movie.tmdbId !== id) throw new DiscoveryError("That starting movie could not be verified. Choose another title.", 503)
+  return movie
+}
 
 export async function streamingServices(region: string): Promise<ServiceOption[]> {
   const response = await cachedTmdbRequest("/watch/providers/movie", { watch_region: region })
