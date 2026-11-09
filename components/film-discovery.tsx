@@ -171,8 +171,14 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
       setRound({ ...previous, selectedId: movie.tmdbId })
       setTrail(history => [...history, { round: previous, movie }].slice(-20))
       setPendingSeed(movie.tmdbId)
+      setAnnouncement(`Your pick of ${movie.title} is saved. Finding related movies.`)
       await loadRound(previous.preferences, movie.tmdbId, [...trail.flatMap(entry => entry.round.movies.map(movie => movie.tmdbId)), ...previous.movies.map(movie => movie.tmdbId)])
-    } catch (failure) { if (!saved) setPendingPick(movie); setError(failure instanceof Error ? failure.message : "Your pick could not be saved.") }
+    } catch (failure) {
+      if (!saved) setPendingPick(movie)
+      const detail = failure instanceof Error ? failure.message : saved ? "The next movies could not be loaded. Please try again." : "Your pick could not be saved."
+      const message = `${saved ? `Your pick of ${movie.title} is saved. ` : ""}${detail}`
+      setError(message); setAnnouncement(message)
+    }
     finally { inFlight.current = false; setBusy(false) }
   }
 
@@ -183,7 +189,11 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
     const seed = pendingSeed !== undefined ? pendingSeed : round?.seed?.tmdbId ?? null
     setPendingSeed(seed)
     try { await loadRound(round?.preferences ?? preferences, seed, round?.movies.map(movie => movie.tmdbId)) }
-    catch (failure) { setError(failure instanceof Error ? failure.message : "Your movies could not be loaded.") }
+    catch (failure) {
+      const saved = round?.movies.find(movie => movie.tmdbId === round.selectedId)
+      const message = `${saved ? `Your pick of ${saved.title} is saved. ` : ""}${failure instanceof Error ? failure.message : "Your movies could not be loaded."}`
+      setError(message); setAnnouncement(message)
+    }
     finally { inFlight.current = false; setBusy(false) }
   }
 
@@ -311,7 +321,8 @@ export default function FilmDiscovery({ mode }: { mode: DataMode }) {
             </div>
             <div className="discovery-results">
               <div className="discovery-results-heading"><div><h2>{round?.seed ? `More like ${round.seed.title}` : "Pick your favorite."}</h2>{!round?.seed && <p>Double tap a poster or tap the two thumbs up.</p>}</div>{trail.length > 0 && <button type="button" disabled={busy || !!pendingPick} onClick={() => void undo()} className="discovery-undo"><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />Undo last pick</button>}</div>
-              {error && <div role="alert" className="discovery-notice mb-5 text-sm"><p>{error}</p><button type="button" onClick={() => pendingPick ? void pick(pendingPick) : void anotherMix()} disabled={busy} className="discovery-text-link mt-2">Try again</button></div>}
+              {error && <div role="alert" className="discovery-notice mb-5 text-sm"><p>{error}</p><button type="button" onClick={() => pendingPick ? void pick(pendingPick) : void anotherMix()} disabled={busy} className="discovery-text-link mt-2">{round && round.selectedId !== null && !pendingPick ? "Load next movies" : "Try again"}</button></div>}
+              {round?.sourceNotice && <p role="status" className="discovery-notice mb-5 text-sm">{round.sourceNotice}</p>}
               {missing && <p role="status" className="discovery-notice mb-5 text-sm text-secondary-foreground">No matching service listings for {missing} in {round?.preferences.region}. These services haven’t been added to this mix.</p>}
               {round?.catalogs.some(catalog => catalog.stale) && <p className="discovery-notice mb-5 text-xs text-muted-foreground">Some availability was last checked more than six hours ago. A refresh is due.</p>}
               {busy && !round ? <div className="discovery-movie-grid" aria-label="Loading movies">{Array.from({ length: 6 }, (_, index) => <div key={index} className="discovery-skeleton animate-pulse motion-reduce:animate-none" />)}</div> : null}

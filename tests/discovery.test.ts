@@ -6,6 +6,7 @@ import { rankFreshMix, rankPersonalized, tasteAffinity } from "../lib/discovery/
 import { STREAMING_SERVICES, type CatalogMovie, type DiscoveryMovie, type DiscoveryRound, type WatchPreferences } from "../lib/discovery/types"
 import { parseTmdbMovie, parseTmdbPage } from "../lib/discovery/tmdb-source"
 import type { DiscoveryStore } from "../lib/discovery/store"
+import { DiscoveryError, MovieSourceUnavailableError } from "../lib/discovery/errors"
 
 const preferences: WatchPreferences = { mode: "home", services: ["prime"], region: "US", includeRentals: false }
 const providers = STREAMING_SERVICES.map((service, index) => ({ provider_id: index + 10, provider_name: service.names[0] }))
@@ -47,6 +48,48 @@ test("additional regional providers work through the same path", async () => {
   assert.equal(calls[1].params.with_watch_providers, "777")
   assert.equal(calls[1].params.watch_region, "CA")
   assert.ok(result.movies.every(movie => movie.availableOn.join() === "Other Regional Service"))
+})
+
+test("ten-service starting mixes overlap lookups with at most four in flight and reuse warm pages", async () => {
+  let active = 0, peak = 0, calls = 0
+  const source = createOnDemandSource(async (path, params) => {
+    calls++
+    if (path === "/watch/providers/movie") return { results: providers }
+    active++; peak = Math.max(peak, active)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    active--
+    const base = Number(params.with_watch_providers) * 1000 + Number(params.page) * 100
+    return { page: Number(params.page), total_pages: 5, total_results: 100, results: Array.from({ length: 20 }, (_, i) => rawMovie(base + i)) }
+  })
+  const all = { ...preferences, services: STREAMING_SERVICES.map(service => service.key) }
+  const first = await source(all, null, 1, new Set())
+  assert.equal(peak, 4, "Lookups must overlap, bounded to four concurrent requests")
+  assert.equal(calls, 11, "Parallelism must not increase upstream work")
+  assert.equal(first.catalogs.length, 10)
+  await source(all, null, 1, new Set())
+  assert.equal(calls, 11, "Warm starting pages must not be fetched again")
+  await source(all, null, 2, new Set())
+  assert.equal(calls, 21, "Only each service's next page is new")
+  assert.equal(peak, 4)
+})
+
+test("a failed service page does not discard a starting mix or get retried within that browse", async () => {
+  let failures = 0
+  const source = createOnDemandSource(async (path, params) => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    if (params.with_watch_providers === "11") { failures++; throw new MovieSourceUnavailableError() }
+    return pageOf([101, 102])
+  })
+  const result = await source({ ...preferences, services: ["prime", "apple"] }, null, 1, new Set())
+  assert.equal(failures, 1, "The second pass must not retry an unavailable service")
+  assert.ok(result.movies.every(movie => movie.availableOn.join() === "Apple TV+"))
+  assert.ok(result.catalogs.every(catalog => catalog.key === "US_apple"))
+  assert.ok(result.sourceNotice?.includes("Some selected services"))
+  const down = createOnDemandSource(async path => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    throw new MovieSourceUnavailableError()
+  })
+  await assert.rejects(down(preferences, null, 1, new Set()), MovieSourceUnavailableError)
 })
 
 test("progressive browsing pages forward and a selected film switches to its own related list", async () => {
@@ -155,7 +198,7 @@ test("refreshes advance the saved catalog cursor and exclude recent exposures wi
   const source: MovieSource = async (_preferences, _seed, page, excluded) => {
     pages.push(page)
     assert.ok(saved.flatMap(round => round.movies).every(movie => excluded.has(movie.tmdbId)))
-    return { movies: Array.from({ length: 30 }, (_, i) => relation(movie(100 + i), movie(1))), catalogs: [], missingCatalogs: [], page }
+    return { movies: Array.from({ length: 30 }, (_, i) => relation(movie(100 + i), movie(1))), catalogs: [], missingCatalogs: [], page, sourceNotice: "Some selected services could not be checked." }
   }
   const input = { preferences, seedId: null, excludeIds: [] }
   const first = await createRound(store, "owner", input, source)
@@ -164,6 +207,7 @@ test("refreshes advance the saved catalog cursor and exclude recent exposures wi
   assert.deepEqual(pages, [1, 2, 3])
   assert.equal(new Set([...first.movies, ...second.movies, ...third.movies].map(movie => movie.tmdbId)).size, 18)
   assert.equal(third.tasteVersion, 3)
+  assert.equal(saved[2].sourceNotice, "Some selected services could not be checked.")
 })
 
 test("fresh mixes spread across services and genres despite a single-genre history", () => {
@@ -347,6 +391,84 @@ test("older film-to-film support helps rank current matches without introducing 
   assert.equal(ranked[0].tmdbId, 102)
   assert.ok(ranked[0].reason.includes(earlier.title))
   assert.ok(ranked.every(movie => movie.tmdbId !== 999))
+})
+
+test("unavailable earlier-pick support cannot block verified matches for the current pick", async () => {
+  let historicalCalls = 0
+  const source = createOnDemandSource(async path => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    if (path === "/movie/50/recommendations") { historicalCalls++; throw new MovieSourceUnavailableError() }
+    if (path === "/movie/10/recommendations") return pageOf([101, 102, 103, 104, 105, 106])
+    if (path.endsWith("/similar")) return pageOf([])
+    if (path.endsWith("/watch/providers")) return { results: { US: { flatrate: [{ provider_id: 11 }] } } }
+    throw new Error("No extra lookup should be needed")
+  })
+  const seed = movie(10), result = await source(preferences, seed, 1, new Set(), [movie(50)])
+  assert.equal(historicalCalls, 1)
+  assert.equal(rankPersonalized(result.movies, seed, [movie(50)], new Set()).length, 6)
+  assert.equal(result.sourceNotice, undefined)
+})
+
+test("one unavailable relationship list and offer record do not erase other verified related films", async () => {
+  let failedOffers = 0, offerChecks = 0, failedLists = 0
+  const source = createOnDemandSource(async path => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    if (path.endsWith("/recommendations")) return pageOf(Array.from({ length: 12 }, (_, i) => 101 + i))
+    if (path.endsWith("/similar")) { failedLists++; throw new MovieSourceUnavailableError() }
+    if (path.endsWith("/watch/providers")) {
+      offerChecks++
+      if (path === "/movie/101/watch/providers") { failedOffers++; throw new MovieSourceUnavailableError() }
+      return { results: { US: { flatrate: [{ provider_id: 11 }] } } }
+    }
+    throw new Error("No generic fallback or retry allowed")
+  })
+  const seed = movie(10), result = await source(preferences, seed, 1, new Set())
+  const ranked = rankPersonalized(result.movies, seed, [], new Set())
+  assert.equal(ranked.length, 6)
+  assert.ok(ranked.every(movie => movie.tmdbId !== 101 && movie.availableOn.join() === "Prime Video" && movie.relations?.some(link => link.seedId === seed.tmdbId)))
+  assert.equal(failedOffers, 1); assert.equal(failedLists, 1)
+  assert.ok(offerChecks <= 16)
+  assert.ok(result.sourceNotice?.includes("verified availability"))
+})
+
+test("optional keyword outages keep a short verified batch; complete offer outages remain retryable errors", async () => {
+  let checks = 0
+  const source = createOnDemandSource(async path => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    if (path.endsWith("/recommendations")) return pageOf([101, 102])
+    if (path.endsWith("/similar")) return pageOf([])
+    if (path.endsWith("/keywords")) throw new MovieSourceUnavailableError()
+    if (path.endsWith("/watch/providers")) { checks++; return { results: { US: { flatrate: [{ provider_id: 11 }] } } } }
+    throw new Error("Unexpected fallback")
+  })
+  const result = await source(preferences, movie(10), 1, new Set())
+  assert.equal(result.movies.length, 2); assert.equal(checks, 2)
+  assert.ok(result.sourceNotice)
+  let failedChecks = 0
+  const down = createOnDemandSource(async path => {
+    if (path === "/watch/providers/movie") return { results: providers }
+    if (path.endsWith("/recommendations")) return pageOf(Array.from({ length: 20 }, (_, i) => 101 + i))
+    if (path.endsWith("/similar")) return pageOf([])
+    if (path.endsWith("/keywords")) return { keywords: [] }
+    if (path.endsWith("/watch/providers")) { failedChecks++; throw new MovieSourceUnavailableError() }
+    throw new Error("Unexpected fallback")
+  })
+  await assert.rejects(down(preferences, movie(10), 1, new Set()), MovieSourceUnavailableError)
+  assert.equal(failedChecks, 16, "Failed checks count toward the existing cap and are never retried")
+})
+
+test("rate limits and invalid movie data remain hard failures", async () => {
+  for (const failure of [new DiscoveryError("Rate limited", 429), new Error("Invalid movie data")]) {
+    let checks = 0
+    const source = createOnDemandSource(async path => {
+      if (path === "/watch/providers/movie") return { results: providers }
+      if (path.endsWith("/recommendations")) return pageOf([101, 102])
+      if (path.endsWith("/similar")) throw failure
+      checks++; throw new Error("Must stop before offer checks")
+    })
+    await assert.rejects(source(preferences, movie(10), 1, new Set()), error => error === failure)
+    assert.equal(checks, 0)
+  }
 })
 
 test("a related film must also be in the regional current-theater list", async () => {

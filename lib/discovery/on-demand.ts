@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { DiscoveryError } from "./errors"
+import { DiscoveryError, MovieSourceUnavailableError } from "./errors"
 import { parseTmdbMovie, parseTmdbPage, type CatalogPage } from "./tmdb-source"
 import { anchorGenre, rankPersonalized, representativePicks } from "./personalization"
 import { catalogKey, STREAMING_SERVICES, type CatalogMovie, type DiscoveryMovie, type DiscoveryRound, type MovieRelation, type ServiceOption, type WatchPreferences } from "./types"
@@ -36,7 +36,7 @@ const availabilitySchema = z.object({ results: z.record(z.object({
   flatrate: offerProviders.optional(), free: offerProviders.optional(), ads: offerProviders.optional(),
   rent: offerProviders.optional(), buy: offerProviders.optional(),
 })) })
-export type BrowseResult = { movies: DiscoveryMovie[]; catalogs: DiscoveryRound["catalogs"]; missingCatalogs: string[]; page: number }
+export type BrowseResult = { movies: DiscoveryMovie[]; catalogs: DiscoveryRound["catalogs"]; missingCatalogs: string[]; page: number; sourceNotice?: string }
 export type MovieSource = (preferences: WatchPreferences, seed: CatalogMovie | null, page: number, excluded: Set<number>, history?: CatalogMovie[]) => Promise<BrowseResult>
 
 export function browseKey(preferences: WatchPreferences, seed: CatalogMovie | null) {
@@ -47,6 +47,17 @@ export function browseKey(preferences: WatchPreferences, seed: CatalogMovie | nu
 export function createOnDemandSource(request: JsonRequest, cachedRequest = createTmdbCache(request)): MovieSource {
   return async (preferences, seed, firstPage, excluded, history = []) => {
     let requests = 0
+    let partial = false
+    async function recover<T>(operation: () => Promise<T>, affectsResults = true): Promise<T | null> {
+      try { return await operation() }
+      catch (error) {
+        // Unverified films are skipped, never assumed available. Configuration,
+        // rate-limit, validation and request-budget errors still stop the browse.
+        if (!(error instanceof MovieSourceUnavailableError)) throw error
+        if (affectsResults) partial = true
+        return null
+      }
+    }
     async function cached(path: string, params: Record<string, string>) {
       // Counts attempted page lookups too, so each browse remains strictly bounded.
       if (++requests > 90) throw new DiscoveryError("Try fewer services for this mix.", 503)
@@ -94,13 +105,15 @@ export function createOnDemandSource(request: JsonRequest, cachedRequest = creat
         return result.movies.map((candidate, index) => ({ candidate, relation: { seedId: movie.tmdbId, seedTitle: movie.title, kind, rank: (requested - 1) * 20 + index } satisfies MovieRelation }))
       }
       // Earlier movies support ranking; they never introduce candidates unrelated to the current pick.
-      for (const picked of representativePicks(history, seed)) {
-        for (const { candidate, relation } of await linkedPage(picked, "recommendation", 1)) {
+      const historyPages = await Promise.all(representativePicks(history, seed).map(picked => recover(() => linkedPage(picked, "recommendation", 1), false)))
+      for (const links of historyPages) {
+        for (const { candidate, relation } of links ?? []) {
           historicalLinks.set(candidate.tmdbId, [...(historicalLinks.get(candidate.tmdbId) ?? []), relation])
         }
       }
-      for (const kind of ["recommendation", "similar"] as const) {
-        for (const { candidate, relation } of await linkedPage(seed, kind, firstPage)) {
+      const seedPages = await Promise.all((["recommendation", "similar"] as const).map(kind => recover(() => linkedPage(seed, kind, firstPage))))
+      for (const links of seedPages) {
+        for (const { candidate, relation } of links ?? []) {
           const existing = related.get(candidate.tmdbId)
           if (existing) existing.relations!.push(relation)
           else related.set(candidate.tmdbId, { ...candidate, sample: false, reason: "", availableOn: [], relations: [relation, ...(historicalLinks.get(candidate.tmdbId) ?? [])] })
@@ -117,7 +130,8 @@ export function createOnDemandSource(request: JsonRequest, cachedRequest = creat
           const verified = await Promise.all(batch.map(async movie => {
             checked.add(movie.tmdbId)
             if (theaterIds) return theaterIds.has(movie.tmdbId) ? { ...movie, availableOn: ["In theaters"] } : null
-            const response = await cached(`/movie/${movie.tmdbId}/watch/providers`, {})
+            const response = await recover(() => cached(`/movie/${movie.tmdbId}/watch/providers`, {}))
+            if (!response) return null
             checkedAt = Math.min(checkedAt, response.checkedAt)
             const offers = availabilitySchema.parse(response.data).results[preferences.region]
             if (!offers) return null
@@ -131,8 +145,8 @@ export function createOnDemandSource(request: JsonRequest, cachedRequest = creat
       }
       await verify(ordered([...related.values()]), 8)
       if ([...available.values()].filter(movie => !excluded.has(movie.tmdbId)).length < 6 && preferences.mode === "home") {
-        const response = await cached(`/movie/${seed.tmdbId}/keywords`, {})
-        const keywords = keywordsSchema.parse(response.data).keywords.filter(keyword => keyword.name.length >= 4 && !GENERIC_KEYWORDS.has(keyword.name.toLowerCase()))
+        const response = await recover(() => cached(`/movie/${seed.tmdbId}/keywords`, {}))
+        const keywords = (response ? keywordsSchema.parse(response.data).keywords : []).filter(keyword => keyword.name.length >= 4 && !GENERIC_KEYWORDS.has(keyword.name.toLowerCase()))
           .sort((a, b) => Number(seed.overview.toLowerCase().includes(b.name.toLowerCase())) - Number(seed.overview.toLowerCase().includes(a.name.toLowerCase())) || b.name.split(" ").length - a.name.split(" ").length).slice(0, 8)
         if (keywords.length) {
           const ids = [...new Set(targets.flatMap(target => target.ids))]
@@ -140,24 +154,27 @@ export function createOnDemandSource(request: JsonRequest, cachedRequest = creat
           if (!preferences.includeRentals) params.with_watch_providers = ids.join("|")
           const anchor = anchorGenre(seed)
           if (anchor !== undefined) params.with_genres = String(anchor)
-          const first = parseTmdbPage((await cached("/discover/movie", params)).data)
-          const actualPage = ((firstPage - 1) % Math.max(1, Math.min(500, first.totalPages))) + 1
-          const result = actualPage === 1 ? first : parseTmdbPage((await cached("/discover/movie", { ...params, page: String(actualPage) })).data)
-          if (result.page !== actualPage) throw new DiscoveryError("Related movies returned an invalid page. Please try again.", 503)
-          const keywordMatches = result.movies.map((candidate, rank): DiscoveryMovie => {
-            const existing = related.get(candidate.tmdbId)
-            return { ...candidate, sample: false, reason: "", availableOn: [], relations: [...(existing?.relations ?? historicalLinks.get(candidate.tmdbId) ?? []), { seedId: seed.tmdbId, seedTitle: seed.title, kind: "keywords", rank }] }
+          await recover(async () => {
+            const first = parseTmdbPage((await cached("/discover/movie", params)).data)
+            const actualPage = ((firstPage - 1) % Math.max(1, Math.min(500, first.totalPages))) + 1
+            const result = actualPage === 1 ? first : parseTmdbPage((await cached("/discover/movie", { ...params, page: String(actualPage) })).data)
+            if (result.page !== actualPage) throw new DiscoveryError("Related movies returned an invalid page. Please try again.", 503)
+            const keywordMatches = result.movies.map((candidate, rank): DiscoveryMovie => {
+              const existing = related.get(candidate.tmdbId)
+              return { ...candidate, sample: false, reason: "", availableOn: [], relations: [...(existing?.relations ?? historicalLinks.get(candidate.tmdbId) ?? []), { seedId: seed.tmdbId, seedTitle: seed.title, kind: "keywords", rank }] }
+            })
+            await verify(ordered(keywordMatches), 16)
           })
-          await verify(ordered(keywordMatches), 16)
         }
       }
       if ([...available.values()].filter(movie => !excluded.has(movie.tmdbId)).length < 6) await verify(ordered([...related.values()]), 16)
+      if (partial && !available.size) throw new MovieSourceUnavailableError()
       for (const target of targets) health.set(target.key, {
         key: target.key, label: target.label, source: "tmdb", checkedAt: new Date(checkedAt).toISOString(),
         refreshAfter: new Date(checkedAt + PAGE_TTL).toISOString(), stale: false,
         movieCount: [...available.values()].filter(movie => movie.availableOn.includes(target.label)).length,
       })
-      return { movies: [...available.values()], catalogs: [...health.values()], missingCatalogs, page: firstPage }
+      return { movies: [...available.values()], catalogs: [...health.values()], missingCatalogs, page: firstPage, ...(partial ? { sourceNotice: "Some movie data could not be checked. These matches have verified availability." } : {}) }
     }
 
     async function collect(target: typeof targets[number], requestedPage: number) {
@@ -182,11 +199,20 @@ export function createOnDemandSource(request: JsonRequest, cachedRequest = creat
       health.set(target.key, { key: target.key, label: target.label, source: "tmdb", checkedAt, refreshAfter: new Date(Date.parse(checkedAt) + PAGE_TTL).toISOString(), movieCount: result.totalResults, stale: false })
     }
     // A second requested page is useful when saved/seen choices exhaust the first.
+    const failedTargets = new Set<string>()
     for (let pass = 0; pass < 2; pass++, page++) {
-      for (const target of targets) await collect(target, page)
+      const active = targets.filter(target => !failedTargets.has(target.key))
+      // Four independent service lookups at a time; no background work or retries.
+      for (let offset = 0; offset < active.length; offset += 4) {
+        await Promise.all(active.slice(offset, offset + 4).map(async target => {
+          if (await recover(() => collect(target, page).then(() => true)) === null) failedTargets.add(target.key)
+        }))
+      }
+      if (!active.length || failedTargets.size === targets.length) break
       if (new Set(movies.filter(movie => !excluded.has(movie.tmdbId) && movie.tmdbId !== seed?.tmdbId).map(movie => movie.tmdbId)).size >= 6) break
     }
-    return { movies, catalogs: [...health.values()], missingCatalogs, page: Math.min(page, firstPage + 1) }
+    if (partial && !movies.length) throw new MovieSourceUnavailableError()
+    return { movies, catalogs: [...health.values()], missingCatalogs, page: Math.min(page, firstPage + 1), ...(partial ? { sourceNotice: "Some selected services could not be checked. Showing movies from the services that responded." } : {}) }
   }
 }
 
@@ -203,7 +229,8 @@ async function requestTmdb(path: string, params: Record<string, string>): Promis
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
   let response: Response
   try { response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000), redirect: "error", cache: "no-store" }) }
-  catch { throw new DiscoveryError("Movie availability could not be reached. Please try again.", 503) }
+  catch { throw new MovieSourceUnavailableError() }
+  if (response.status >= 500) throw new MovieSourceUnavailableError()
   if (!response.ok) throw new DiscoveryError(`Movie availability returned HTTP ${response.status}. Please try again.`, 503)
   try {
     const payload: unknown = await response.json()

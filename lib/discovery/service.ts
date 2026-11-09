@@ -52,7 +52,7 @@ export async function createRound(store: DiscoveryStore, uid: string, input: z.i
     movies = [...movies, ...fill].slice(0, 6)
   }
   const round: DiscoveryRound = {
-    id, preferences: input.preferences, movies, seed, catalogs, missingCatalogs, browse: { key, page: result.page }, tasteVersion: taste.tasteVersion ?? 0,
+    id, preferences: input.preferences, movies, seed, catalogs, missingCatalogs, ...(result.sourceNotice ? { sourceNotice: result.sourceNotice } : {}), browse: { key, page: result.page }, tasteVersion: taste.tasteVersion ?? 0,
     createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(), selectedId: null, voteCreated: false,
   }
   await store.saveRound(uid, round)

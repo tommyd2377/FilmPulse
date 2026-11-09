@@ -75,6 +75,7 @@ export type DiscoveryRound = {
   seed: CatalogMovie | null
   catalogs: CatalogHealth[]
   missingCatalogs: string[]
+  sourceNotice?: string
   createdAt: string
   expiresAt: string
   selectedId: number | null
